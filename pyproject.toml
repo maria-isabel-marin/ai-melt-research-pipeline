@@ -17,13 +17,20 @@ dependencies = [
     "scikit-learn",
     "networkx",
     "matplotlib",
+    "seaborn",
     "plotly",
     "pyyaml",
     "jupyter",
     "ipykernel",
     "openpyxl",
     "pyarrow",
-    "tqdm"
+    "tqdm",
+    "pymupdf",
+    "spacy",
+    "wordcloud",
+    "python-dotenv",
+    "openai",
+    "anthropic"
 ]
 
 [project.optional-dependencies]

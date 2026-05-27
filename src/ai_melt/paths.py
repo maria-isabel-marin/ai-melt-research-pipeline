@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from ai_melt.config import get_project_root, load_config
 
@@ -29,3 +30,26 @@ def ensure_project_directories() -> None:
 
     for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
+
+
+def project_path(path_value: str | Path, root: Path | None = None) -> Path:
+    """Resolve a project-relative path against the repository root."""
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return (root or ROOT_DIR) / path
+
+
+def configured_path(config: dict[str, Any], *keys: str) -> Path:
+    """Resolve a nested path value from the project configuration."""
+    value: Any = config
+    for key in keys:
+        value = value[key]
+    return project_path(value)
+
+
+def ensure_parent(path: str | Path) -> Path:
+    """Create the parent directory for a file path and return the path."""
+    resolved = project_path(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return resolved
