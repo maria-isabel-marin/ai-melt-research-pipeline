@@ -1,0 +1,22 @@
+project:
+  name: ai-melt-research-pipeline
+  corpus_name: cev_final_report
+  language: es
+
+paths:
+  data_raw: data/raw
+  data_interim: data/interim
+  data_processed: data/processed
+  outputs_tables: outputs/tables
+  outputs_figures: outputs/figures
+  outputs_html: outputs/html
+  outputs_final: outputs/final
+
+pipeline:
+  stages:
+    - corpus_ingestion
+    - primary_metaphor
+    - conventionalisation
+    - metaphor_scenarios
+    - metaphor_regimes
+    - cultural_narrative

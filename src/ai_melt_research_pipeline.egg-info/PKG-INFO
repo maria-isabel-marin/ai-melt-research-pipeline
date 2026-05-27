@@ -1,3 +1,29 @@
+Metadata-Version: 2.4
+Name: ai-melt-research-pipeline
+Version: 0.1.0
+Summary: Research pipeline for the computational operationalisation of the MELT model.
+Author: María Isabel Marín-Morales
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pandas
+Requires-Dist: numpy
+Requires-Dist: scikit-learn
+Requires-Dist: networkx
+Requires-Dist: matplotlib
+Requires-Dist: plotly
+Requires-Dist: pyyaml
+Requires-Dist: jupyter
+Requires-Dist: ipykernel
+Requires-Dist: openpyxl
+Requires-Dist: pyarrow
+Requires-Dist: tqdm
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: pre-commit; extra == "dev"
+Requires-Dist: nbstripout; extra == "dev"
+
 # AI-MELT Research Pipeline
 
 Research pipeline for the computational operationalisation of the Metaphor Field-Loop Theory (MELT) model.
