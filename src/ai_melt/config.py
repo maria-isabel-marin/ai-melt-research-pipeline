@@ -17,4 +17,14 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
     config_path = Path(config_path)
 
     with config_path.open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        return yaml.safe_load(file) or {}
+
+
+def get_config_section(config: dict[str, Any], *keys: str) -> dict[str, Any]:
+    """Return a nested configuration section, or an empty dict when absent."""
+    section: Any = config
+    for key in keys:
+        if not isinstance(section, dict):
+            return {}
+        section = section.get(key, {})
+    return section if isinstance(section, dict) else {}

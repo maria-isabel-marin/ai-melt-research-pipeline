@@ -3,6 +3,26 @@ project:
   corpus_name: cev_final_report
   language: es
 
+corpus:
+  id: CEV-IF-2022
+  name: Informe Final de la Comisión de la Verdad de Colombia
+  discourse_community: CEV, víctimas, actores armados y sociedad colombiana en general
+  textual_genre: Informe institucional de comisión de la verdad
+  date: "2022"
+  language: español
+  raw_input_dir: data/raw/corpus
+  volumes:
+    1.IF_CONVOCATORIA-A-LA-PAZ-GRANDE_DIGITAL_2022.pdf:
+      title: Convocatoria a la paz grande
+      author: Comisión de la Verdad
+      date: "2022-06-28"
+      document_type: Volumen del Informe Final
+    6 CEV_MI CUERPO ES LA VERDAD_DIGITAL_2022.pdf:
+      title: Mi cuerpo es la verdad
+      author: Comisión de la Verdad
+      date: "2022-06-28"
+      document_type: Volumen del Informe Final
+
 paths:
   data_raw: data/raw
   data_interim: data/interim
@@ -20,3 +40,227 @@ pipeline:
     - metaphor_scenarios
     - metaphor_regimes
     - cultural_narrative
+
+stage_00:
+  spacy_model: es_core_news_lg
+  batch_size: 500
+  max_length: 3000000
+  inspection:
+    sample_size: 5
+    window_size: 100
+    random_state: 42
+  debug_outputs:
+    write_csv_copies: false
+    csv_preview_max_text_length: 2000
+    include_full_text_in_csv: true
+  inputs:
+    corpus_dir: data/raw/corpus
+    file_extensions:
+      - .pdf
+      - .txt
+  intermediate_outputs:
+    discovered_files_csv: data/interim/n0_discovered_files.csv
+    pages_raw_parquet: data/interim/n0_pages_raw.parquet
+    pages_with_chapters_parquet: data/interim/n0_pages_with_chapters.parquet
+    pages_clean_parquet: data/interim/n0_pages_clean.parquet
+    footnotes_csv: data/interim/n0_footnotes.csv
+    sentences_parquet: data/interim/n0_sentences.parquet
+    sentences_annotated_parquet: data/interim/n0_sentences_annotated.parquet
+  outputs:
+    corpus_csv: data/processed/n0_corpus.csv
+    corpus_parquet: data/processed/n0_corpus.parquet
+    metadata_json: data/processed/n0_metadata.json
+    footnotes_csv: outputs/tables/n0_footnotes.csv
+    document_summary_csv: outputs/tables/n0_summary_by_document.csv
+    chapter_summary_csv: outputs/tables/n0_summary_by_chapter.csv
+    pages_raw_inspection_csv: outputs/tables/n0_pages_raw_inspection.csv
+    chapters_inspection_csv: outputs/tables/n0_chapters_inspection.csv
+    segmentation_inspection_csv: outputs/tables/n0_segmentation_inspection.csv
+    annotations_inspection_csv: outputs/tables/n0_annotations_inspection.csv
+    cleaning_inspection_csv: outputs/tables/n0_cleaning_inspection.csv
+    footnotes_inspection_csv: outputs/tables/n0_footnotes_inspection.csv
+  columns:
+    corpus_id: ID_corpus
+    document_id: ID_documento
+    file: archivo
+    volume: volumen
+    chapter: capitulo
+    page: pagina
+    sentence_id: ID_oracion
+    sentence_text: oracion_texto
+    word_count: n_palabras
+    character_count: n_caracteres
+    tokens: tokens
+    lemmas: lemas
+    pos_tags: pos_tags
+    named_entities: entidades_NER
+  extraction:
+    font_top_percentile: 0.03
+  cleaning:
+    repeated_header_threshold: 0.3
+    min_line_length: 30
+    min_clean_page_characters: 50
+    headers_footers:
+      - CONVOCATORIA A LA PAZ GRANDE
+      - ESCLARECER LA VERDAD
+      - HAY FUTURO SI HAY VERDAD
+      - HALLAZGOS Y RECOMENDACIONES
+      - NO MATARÁS
+      - HASTA LA GUERRA TIENE LÍMITES
+      - MI CUERPO ES LA VERDAD
+      - CUANDO LOS PÁJAROS NO CANTABAN
+      - RESISTIR NO ES AGUANTAR
+      - SUFRIR LA GUERRA Y REHACER LA VIDA
+      - COLOMBIA ADENTRO
+      - COMISIÓN DE LA VERDAD
+      - INTRODUCCIÓN
+    pages_to_exclude:
+      1.IF_CONVOCATORIA-A-LA-PAZ-GRANDE_DIGITAL_2022.pdf:
+        - [1, 10]
+        - [52, 56]
+      6 CEV_MI CUERPO ES LA VERDAD_DIGITAL_2022.pdf:
+        - [1, 20]
+        - [334, 644]
+    regex_patterns_to_remove:
+      - "^\\d{1,4}$"
+      - "^\\d{1,4}\\s*$"
+      - "^Página\\s+\\d+"
+      - "^\\d+\\s+de\\s+\\d+"
+      - "^Capítulo\\s+\\d+"
+      - "^Tabla de contenido"
+      - "^Índice"
+      - "^Contenido"
+      - "^REFERENCIAS\\s*$"
+      - "^BIBLIOGRAFÍA\\s*$"
+      - "^Fuente:"
+      - "^Foto:"
+      - "^Ilustración:"
+      - "^Gráfic[oa]\\s+\\d+"
+      - "^Tabla\\s+\\d+"
+      - "^Mapa\\s+\\d+"
+      - "^Figura\\s+\\d+"
+  segmentation:
+    spacy_model: es_core_news_lg
+    spacy_exclude:
+      - textcat
+      - custom
+    max_length: 3000000
+    min_sentence_length: 10
+    max_sentence_length: 2000
+    nlp_batch_size: 500
+
+stage_00_visualisation:
+  input: data/processed/n0_corpus.csv
+  outputs:
+    figures_dir: outputs/figures
+    tables_dir: outputs/tables
+  chapter_order: aparicion
+  top_chapters: 30
+  top_entities: 20
+  top_pos: 12
+  wordcloud:
+    corpus_max_words: 150
+    volume_max_words: 80
+    min_volume_lemmas: 10
+  figure_names:
+    sentences_by_volume: viz_oraciones_por_volumen.png
+    words_by_volume: viz_palabras_por_volumen.png
+    sentences_by_chapter_global: viz_oraciones_por_capitulo_global.png
+    words_by_chapter_global: viz_palabras_por_capitulo_global.png
+    sentence_length_corpus: viz_longitud_corpus.png
+    sentence_length_by_volume: viz_longitud_por_volumen.png
+    named_entities_top: viz_NER_top20_{slug}.png
+    named_entities_types: viz_NER_tipos_{slug}.png
+    pos_distribution: viz_pos_{slug}.png
+    wordcloud: viz_wordcloud_{slug}.png
+
+stage_01:
+  inputs:
+    corpus_csv: data/processed/n0_corpus.csv
+  outputs:
+    metaphors_pattern: data/processed/n1_metaforas_{approach}.csv
+    primary_metaphors_csv: data/processed/n1_metaforas_primarias.csv
+    sentence_sample_csv: data/interim/n1_muestra_oraciones.csv
+    ontological_correspondences_csv: data/processed/n1_correspondencias_ontologicas.csv
+    epistemic_correspondences_csv: data/processed/n1_correspondencias_epistemicas.csv
+    approach_comparison_csv: outputs/tables/n1_comparacion_enfoques.csv
+    evaluation_sample_csv: outputs/tables/n1_muestra_evaluacion.csv
+  approaches:
+    active:
+      - claude
+      - openai
+    visualise:
+      - claude
+      - openai
+    colors:
+      claude: "#3B8BD4"
+      openai: "#D85A30"
+      huggingface: "#1D9E75"
+      embeddings: "#7F77DD"
+      groq_llama: "#E8A838"
+      gemini: "#FF6B8A"
+  llm:
+    standalone_mode: true
+    hybrid_llm: openai
+    claude_model: claude-sonnet-4-5
+    openai_model: gpt-4.1-mini
+    groq_model: llama-3.1-8b-instant
+    gemini_model: gemini-2.0-flash
+    temperature: 0.1
+    max_retries: 3
+    rate_limit_pause_seconds: 1.0
+    max_tokens: 4096
+  local_models:
+    huggingface_model: HiTZ/mdeberta-base-metaphor-detection-es
+    embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+    embedding_contrast_threshold: 0.35
+    target_pos:
+      - VERB
+      - NOUN
+      - ADJ
+  sampling:
+    sample_mode: true
+    sample_size: 50
+    random_state: 42
+    evaluation_sample_per_approach: 15
+  columns:
+    sentence_id: ID_oracion
+    document_id: ID_documento
+    page: pagina
+    sentence_text: oracion_texto
+    context: contexto_ampliado
+    focus: foco
+    focus_lemma: foco_lemma
+    expression_id: ID_expresion
+    approach: enfoque
+
+stage_01_visualisation:
+  inputs:
+    corpus_csv: data/processed/n0_corpus.csv
+    metaphors_pattern: data/processed/n1_metaforas_{approach}.csv
+    epistemic_correspondences_csv: data/processed/n1_correspondencias_epistemicas.csv
+    approach_comparison_csv: outputs/tables/n1_comparacion_enfoques.csv
+  outputs:
+    figures_dir: outputs/figures
+    html_dir: outputs/html
+  approaches:
+    - claude
+    - openai
+    - huggingface
+    - embeddings
+  top_domains: 20
+  heatmap_top_n: 15
+  sankey_top_n: 20
+  consolidated_sankey_top_n: 25
+  figure_names:
+    metaphors_by_chapter: viz_metaforas_por_capitulo.png
+    top_domains: viz_top_dominios.png
+    source_domains_by_approach: viz_top_dominios_fuente_por_enfoque.png
+    target_domains_by_approach: viz_top_dominios_meta_por_enfoque.png
+    domain_heatmap: viz_heatmap_dominios.png
+    focus_pos: viz_pos_foco.png
+    conceptual_metaphor_wordcloud: viz_wordcloud_metaforas.png
+    epistemic_correspondences: viz_correspondencias_epistemicas.png
+    agreement_heatmap: viz_matriz_concordancia.png
+    sankey_by_approach: viz_sankey_{approach}.html
+    sankey_consolidated: viz_sankey_consolidado.html
