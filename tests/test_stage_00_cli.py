@@ -36,6 +36,9 @@ def test_stage_00_cli_parser_accepts_requested_options() -> None:
             "--limit-sentences",
             "6",
             "--write-csv",
+            "--status",
+            "--next",
+            "--reset-status",
         ]
     )
     assert args.step == "inspect-cleaning"
@@ -48,3 +51,6 @@ def test_stage_00_cli_parser_accepts_requested_options() -> None:
     assert args.limit_pages == 5
     assert args.limit_sentences == 6
     assert args.write_csv is True
+    assert args.status is True
+    assert args.next is True
+    assert args.reset_status is True

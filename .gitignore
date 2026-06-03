@@ -39,11 +39,14 @@ outputs/tables/*
 outputs/figures/*
 outputs/html/*
 outputs/final/*
+outputs/logs/*
 
 !outputs/tables/.gitkeep
 !outputs/figures/.gitkeep
 !outputs/html/.gitkeep
 !outputs/final/.gitkeep
+!outputs/logs/
+!outputs/logs/.gitkeep
 
 # OS / editors
 .DS_Store
@@ -53,7 +56,7 @@ Thumbs.db
 
 # Logs
 *.log
-logs/
+/logs/
 
 # Python packaging metadata
 *.egg-info/

@@ -97,6 +97,21 @@ python scripts/00_ingest_corpus.py --step inspect-cleaning --document-id DOC-doc
 python scripts/00_ingest_corpus.py --step extract --limit-files 1
 ```
 
+Stage 00 also keeps a local progress/status file at
+`outputs/logs/stage_00_status.json`. The file is ignored by Git and is updated
+after each successful step. Use it to resume a step-by-step run:
+
+```bash
+python scripts/00_ingest_corpus.py --status
+python scripts/00_ingest_corpus.py --next
+python scripts/00_ingest_corpus.py --reset-status
+```
+
+`--status` checks both the local status file and configured expected outputs, so
+it warns when a step is recorded as complete but its output files are missing.
+Inspection steps are shown as recommended validation steps, not strict
+dependencies for later processing.
+
 Intermediate N0 files are written to `data/interim/`, including discovered
 files, raw pages, chaptered pages, cleaned pages, segmented sentences, and
 annotated sentences. Final N0 tables are written to `data/processed/` and
