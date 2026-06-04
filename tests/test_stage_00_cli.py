@@ -13,6 +13,19 @@ def load_stage_00_script():
     return module
 
 
+def load_stage_00_visualisation_script():
+    script_path = (
+        Path(__file__).resolve().parents[1] / "scripts" / "00_visualise_corpus.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "stage_00_visualisation_cli", script_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_stage_00_cli_parser_accepts_requested_options() -> None:
     module = load_stage_00_script()
     args = module.build_parser().parse_args(
@@ -54,3 +67,24 @@ def test_stage_00_cli_parser_accepts_requested_options() -> None:
     assert args.status is True
     assert args.next is True
     assert args.reset_status is True
+
+
+def test_stage_00_visualisation_cli_parser_accepts_requested_options() -> None:
+    module = load_stage_00_visualisation_script()
+    args = module.build_parser().parse_args(
+        [
+            "--step",
+            "sentence-lengths",
+            "--status",
+            "--next",
+            "--reset-status",
+        ]
+    )
+    help_text = module.build_parser().format_help()
+
+    assert args.step == "sentence-lengths"
+    assert args.status is True
+    assert args.next is True
+    assert args.reset_status is True
+    assert "corpus-overview" in help_text
+    assert "word-counts" in help_text

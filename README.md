@@ -143,6 +143,42 @@ Run stage 00 visualisation:
 python scripts/00_visualise_corpus.py
 ```
 
+Stage 00 visualisation can also be validated step by step from the command
+line. The migrated steps follow the central cells of
+`notebooks/legacy/00_corpus_ingestion_viz.ipynb`: corpus overview,
+document/volume distribution, chapter distribution, sentence lengths,
+named entities, POS tags, word counts/wordclouds, footnotes, and final export
+summary.
+
+```bash
+python scripts/00_visualise_corpus.py --step load
+python scripts/00_visualise_corpus.py --step corpus-overview
+python scripts/00_visualise_corpus.py --step document-distribution
+python scripts/00_visualise_corpus.py --step chapter-distribution
+python scripts/00_visualise_corpus.py --step sentence-lengths
+python scripts/00_visualise_corpus.py --step named-entities
+python scripts/00_visualise_corpus.py --step pos-distribution
+python scripts/00_visualise_corpus.py --step word-counts
+python scripts/00_visualise_corpus.py --step footnotes
+python scripts/00_visualise_corpus.py --step export-summary
+```
+
+Use `--step all` to regenerate the migrated N0 visual outputs. Tables are
+written under `outputs/tables/`, static figures under `outputs/figures/`, and
+interactive outputs, when present, under `outputs/html/`. The visualisation
+status file is local-only at `outputs/logs/stage_00_visualisation_status.json`
+and is updated after each successful step:
+
+```bash
+python scripts/00_visualise_corpus.py --status
+python scripts/00_visualise_corpus.py --next
+python scripts/00_visualise_corpus.py --reset-status
+```
+
+`--status` checks both the run record and the configured output files, so a
+step is treated as complete when its expected files already exist even if it was
+generated before the status file was created.
+
 Run stage 01 processing:
 
 ```bash

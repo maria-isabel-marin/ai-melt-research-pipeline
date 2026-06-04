@@ -10,6 +10,12 @@ def test_config_loads() -> None:
     assert "stage_01" in config
     assert "debug_outputs" in config["stage_00"]
     assert "write_csv_copies" in config["stage_00"]["debug_outputs"]
+    assert "stage_00_visualisation" in config
+    assert (
+        config["stage_00_visualisation"]["histogram_bins"]["corpus_sentence_lengths"]
+        == 50
+    )
+    assert "corpus_overview_csv" in config["stage_00_visualisation"]["table_names"]
 
 
 def test_project_directories_can_be_created() -> None:

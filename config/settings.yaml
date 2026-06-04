@@ -151,28 +151,60 @@ stage_00:
 
 stage_00_visualisation:
   input: data/processed/n0_corpus.csv
+  inputs:
+    corpus_csv: data/processed/n0_corpus.csv
+    footnotes_csv: outputs/tables/n0_footnotes.csv
   outputs:
     figures_dir: outputs/figures
     tables_dir: outputs/tables
+    html_dir: outputs/html
   chapter_order: aparicion
   top_chapters: 30
   top_entities: 20
   top_pos: 12
+  histogram_bins:
+    corpus_sentence_lengths: 50
+    volume_sentence_lengths: 40
+  figure_sizes:
+    default: [12, 6]
+    volume_bars: [12, 6]
+    sentence_hist: [12, 5]
+    sentence_boxplot: [12, 6]
+    wordcloud_corpus: [14, 6]
+    wordcloud_volume: [14, 6]
   wordcloud:
     corpus_max_words: 150
+    corpus_width: 1200
+    corpus_height: 500
     volume_max_words: 80
+    volume_width: 800
+    volume_height: 400
     min_volume_lemmas: 10
   figure_names:
     sentences_by_volume: viz_oraciones_por_volumen.png
     words_by_volume: viz_palabras_por_volumen.png
     sentences_by_chapter_global: viz_oraciones_por_capitulo_global.png
     words_by_chapter_global: viz_palabras_por_capitulo_global.png
+    sentences_by_chapter_volume: viz_oraciones_{slug}.png
+    words_by_chapter_volume: viz_palabras_{slug}.png
     sentence_length_corpus: viz_longitud_corpus.png
+    sentence_length_volume: viz_longitud_{slug}.png
     sentence_length_by_volume: viz_longitud_por_volumen.png
     named_entities_top: viz_NER_top20_{slug}.png
     named_entities_types: viz_NER_tipos_{slug}.png
     pos_distribution: viz_pos_{slug}.png
     wordcloud: viz_wordcloud_{slug}.png
+  table_names:
+    corpus_overview_csv: n0_viz_corpus_overview.csv
+    document_distribution_csv: n0_viz_document_distribution.csv
+    chapter_distribution_csv: n0_viz_chapter_distribution.csv
+    sentence_lengths_csv: n0_viz_sentence_lengths.csv
+    named_entities_csv: n0_viz_named_entities.csv
+    pos_distribution_csv: n0_viz_pos_distribution.csv
+    word_counts_csv: n0_viz_word_counts.csv
+    content_lemmas_csv: n0_viz_content_lemmas.csv
+    footnotes_summary_csv: n0_viz_footnotes_summary.csv
+    export_summary_csv: n0_viz_export_summary.csv
 
 stage_01:
   inputs:
