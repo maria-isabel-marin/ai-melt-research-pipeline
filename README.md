@@ -185,11 +185,57 @@ Run stage 01 processing:
 python scripts/01_process_primary_metaphors.py
 ```
 
+Stage 01 processing is restricted to Claude and OpenAI and can be inspected
+step by step:
+
+```bash
+python scripts/01_process_primary_metaphors.py --step config
+python scripts/01_process_primary_metaphors.py --step load-data --write-csv
+python scripts/01_process_primary_metaphors.py --step design-prompt
+python scripts/01_process_primary_metaphors.py --step approach-a-claude
+python scripts/01_process_primary_metaphors.py --step approach-b-openai
+python scripts/01_process_primary_metaphors.py --step export-approach-results
+python scripts/01_process_primary_metaphors.py --step load-results
+python scripts/01_process_primary_metaphors.py --step compare-approaches
+python scripts/01_process_primary_metaphors.py --step consolidate-results
+python scripts/01_process_primary_metaphors.py --step human-evaluation-and-summary
+```
+
+Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` and
+`OPENAI_API_KEY`. Placeholder or missing values fail only when the matching API
+step runs; help, status, prompt design, downstream processing, and
+visualisation do not require keys. Never commit `.env`.
+
+Stage 01 processing status is stored locally in
+`outputs/logs/stage_01_status.json`:
+
+```bash
+python scripts/01_process_primary_metaphors.py --status
+python scripts/01_process_primary_metaphors.py --next
+python scripts/01_process_primary_metaphors.py --reset-status
+```
+
 Run stage 01 visualisation:
 
 ```bash
 python scripts/01_visualise_primary_metaphors.py
 ```
+
+The visualisation CLI follows the thirteen sections of the legacy N1
+visualisation notebook. Inspect the available steps with `--help`, run any step
+with `--step`, or use `--step all`. Its local status file is
+`outputs/logs/stage_01_visualisation_status.json`.
+
+```bash
+python scripts/01_visualise_primary_metaphors.py --status
+python scripts/01_visualise_primary_metaphors.py --next
+python scripts/01_visualise_primary_metaphors.py --reset-status
+```
+
+Generated Stage 01 data and visual outputs remain local and ignored by Git.
+Complete validation command sequences are available in
+`docs/run_stage_01_validation.sh` and
+`docs/run_stage_01_visualisation_validation.sh`.
 
 Stage 01 defaults to the `claude` and `openai` approaches from the legacy
 notebook. Configure API keys in the environment before running those approaches,

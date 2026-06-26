@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from dotenv import load_dotenv
 from sklearn.metrics import cohen_kappa_score
 
 from ai_melt.paths import project_path
@@ -137,6 +138,19 @@ FEW_SHOT_EXAMPLES = [
 ]
 
 LLMCallable = Callable[[str, str, str], tuple[dict[str, Any], int, int]]
+STAGE_01_APPROACHES = ["claude", "openai"]
+STAGE_01_STEPS = [
+    "config",
+    "load-data",
+    "design-prompt",
+    "approach-a-claude",
+    "approach-b-openai",
+    "export-approach-results",
+    "load-results",
+    "compare-approaches",
+    "consolidate-results",
+    "human-evaluation-and-summary",
+]
 
 
 def next_id(approach: str, counters: dict[str, int]) -> str:
@@ -222,9 +236,7 @@ def make_openai_runner(llm_config: dict[str, Any]) -> LLMCallable:
     except ImportError as exc:  # pragma: no cover - optional runtime
         raise RuntimeError("Install openai to run the OpenAI approach.") from exc
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is required for the OpenAI approach.")
+    api_key = require_api_key("openai")
     client = openai.OpenAI(api_key=api_key)
 
     def run(sentence: str, context: str, candidates_info: str = ""):
@@ -232,7 +244,7 @@ def make_openai_runner(llm_config: dict[str, Any]) -> LLMCallable:
         for attempt in range(int(llm_config.get("max_retries", 3))):
             try:
                 response = client.chat.completions.create(
-                    model=llm_config.get("openai_model", "gpt-4.1-mini"),
+                    model=llm_config.get("model", "gpt-4.1-mini"),
                     messages=messages,
                     temperature=float(llm_config.get("temperature", 0.1)),
                     max_tokens=int(llm_config.get("max_tokens", 4096)),
@@ -262,9 +274,7 @@ def make_claude_runner(llm_config: dict[str, Any]) -> LLMCallable:
     except ImportError as exc:  # pragma: no cover - optional runtime
         raise RuntimeError("Install anthropic to run the Claude approach.") from exc
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is required for the Claude approach.")
+    api_key = require_api_key("claude")
     client = anthropic.Anthropic(api_key=api_key)
 
     def run(sentence: str, context: str, candidates_info: str = ""):
@@ -272,7 +282,7 @@ def make_claude_runner(llm_config: dict[str, Any]) -> LLMCallable:
         for attempt in range(int(llm_config.get("max_retries", 3))):
             try:
                 response = client.messages.create(
-                    model=llm_config.get("claude_model", "claude-sonnet-4-5"),
+                    model=llm_config.get("model", "claude-sonnet-4-5"),
                     max_tokens=int(llm_config.get("max_tokens", 4096)),
                     temperature=float(llm_config.get("temperature", 0.1)),
                     system=[
@@ -348,12 +358,19 @@ def process_llm_approach(
     results: list[dict[str, Any]] = []
     tokens_in = 0
     tokens_out = 0
+    successful_responses = 0
+    failed_responses = 0
     start = time.time()
 
     for _, row in df_work.iterrows():
-        payload, token_in, token_out = runner(
-            row["oracion_texto"], row["contexto_ampliado"], ""
-        )
+        try:
+            payload, token_in, token_out = runner(
+                row["oracion_texto"], row["contexto_ampliado"], ""
+            )
+            successful_responses += 1
+        except Exception:
+            failed_responses += 1
+            continue
         tokens_in += token_in
         tokens_out += token_out
         for metaphor in payload.get("metaforas", []) or []:
@@ -373,6 +390,8 @@ def process_llm_approach(
         "seconds": time.time() - start,
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
+        "successful_responses": successful_responses,
+        "failed_responses": failed_responses,
     }
 
 
@@ -651,63 +670,424 @@ def runner_for_approach(approach: str, llm_config: dict[str, Any]) -> LLMCallabl
     )
 
 
-def run_stage_01(config: dict[str, Any]) -> pd.DataFrame:
-    """Run primary metaphor extraction for configured approaches."""
-    stage_config = config["stage_01"]
-    df_n0 = pd.read_csv(project_path(stage_config["inputs"]["corpus_csv"]))
-    sampling = stage_config.get("sampling", {})
-    df_work = prepare_work_dataframe(
-        df_n0,
-        bool(sampling.get("sample_mode", True)),
-        int(sampling.get("sample_size", 50)),
-        int(sampling.get("random_state", 42)),
+def load_environment() -> dict[str, bool]:
+    """Load local environment variables and report credential presence safely."""
+    load_dotenv(project_path(".env"), override=False)
+    return {
+        "claude": _usable_key(os.environ.get("ANTHROPIC_API_KEY")),
+        "openai": _usable_key(os.environ.get("OPENAI_API_KEY")),
+    }
+
+
+def _usable_key(value: str | None) -> bool:
+    return bool(value and value.strip() and "replace-with-real" not in value.lower())
+
+
+def require_api_key(approach: str) -> str:
+    """Return an API key or fail before an external request is attempted."""
+    load_environment()
+    env_name = {
+        "claude": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+    }[approach]
+    value = os.environ.get(env_name)
+    if not _usable_key(value):
+        raise RuntimeError(
+            f"Missing {env_name}. Add it to .env or set it in the environment."
+        )
+    return str(value)
+
+
+def _read_dataframe(path: Path) -> pd.DataFrame:
+    if path.suffix == ".parquet":
+        return pd.read_parquet(path)
+    return pd.read_csv(path)
+
+
+def _write_dataframe(
+    df: pd.DataFrame, path: Path, write_csv: bool = False
+) -> list[Path]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix == ".parquet":
+        df.to_parquet(path, index=False)
+    else:
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+    written = [path]
+    if write_csv and path.suffix == ".parquet":
+        csv_path = path.with_suffix(".csv")
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        written.append(csv_path)
+    return written
+
+
+def _stage_path(stage: dict[str, Any], section: str, key: str, **values: str) -> Path:
+    value = stage[section][key]
+    formatted = str(value).format(**values) if values else value
+    return project_path(formatted)
+
+
+def _approach_config(stage: dict[str, Any], approach: str) -> dict[str, Any]:
+    return {**stage.get("llm", {}), **stage["approaches"][approach]}
+
+
+def _load_work(stage: dict[str, Any]) -> pd.DataFrame:
+    return _read_dataframe(_stage_path(stage, "intermediate_outputs", "work_parquet"))
+
+
+def _load_parsed(stage: dict[str, Any], approach: str) -> pd.DataFrame:
+    return _read_dataframe(
+        _stage_path(
+            stage, "intermediate_outputs", "parsed_results_pattern", approach=approach
+        )
     )
 
-    results_by_approach = {}
-    ontological_tables = []
-    epistemic_tables = []
-    timings = {}
-    costs = {}
-    counters: dict[str, int] = {}
-    llm_config = stage_config.get("llm", {})
 
-    for approach in stage_config.get("approaches", {}).get("active", []):
-        runner = runner_for_approach(approach, llm_config)
-        nested_results, metrics = process_llm_approach(
+def _available_results(
+    stage: dict[str, Any], exported: bool = True
+) -> dict[str, pd.DataFrame]:
+    section = "outputs" if exported else "intermediate_outputs"
+    key = "metaphors_pattern" if exported else "parsed_results_pattern"
+    results = {}
+    for approach in STAGE_01_APPROACHES:
+        path = _stage_path(stage, section, key, approach=approach)
+        if path.exists():
+            results[approach] = _read_dataframe(path)
+    return results
+
+
+def run_stage_01_step(
+    config: dict[str, Any],
+    step: str,
+    *,
+    write_csv: bool = False,
+    sample_size: int | None = None,
+    random_state: int | None = None,
+    limit_sentences: int | None = None,
+    document_id: str | None = None,
+    page_number: int | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Run one inspectable Stage 01 processing step."""
+    stage = config["stage_01"]
+    credentials = load_environment()
+    if step == "config":
+        path = _stage_path(stage, "outputs", "config_summary_json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "approaches": STAGE_01_APPROACHES,
+            "input": str(_stage_path(stage, "inputs", "n0_corpus")),
+            "credentials_present": credentials,
+        }
+        path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        return {"config_summary": path, "_summary": summary}
+
+    if step == "load-data":
+        input_path = _stage_path(stage, "inputs", "n0_corpus")
+        df_n0 = _read_dataframe(input_path)
+        original_rows = len(df_n0)
+        if document_id is not None:
+            df_n0 = df_n0[df_n0["ID_documento"] == document_id]
+        if page_number is not None:
+            df_n0 = df_n0[df_n0["pagina"] == page_number]
+        sampling = stage.get("sampling", {})
+        selected_size = sample_size or int(sampling.get("sample_size", 50))
+        seed = random_state or int(sampling.get("random_state", 42))
+        df_work = prepare_work_dataframe(
+            df_n0,
+            bool(sampling.get("sample_mode", True)),
+            selected_size,
+            seed,
+        )
+        if limit_sentences is not None:
+            df_work = df_work.head(limit_sentences)
+        outputs = _write_dataframe(
             df_work,
+            _stage_path(stage, "intermediate_outputs", "work_parquet"),
+            write_csv,
+        )
+        return {
+            "outputs": outputs,
+            "_summary": {
+                "input": input_path,
+                "rows_loaded": original_rows,
+                "rows_retained": len(df_work),
+                "documents": df_work["ID_documento"].nunique(),
+                "chapters": (
+                    df_work["capitulo"].nunique() if "capitulo" in df_work else 0
+                ),
+                "columns": list(df_work.columns),
+            },
+        }
+
+    if step == "design-prompt":
+        path = _stage_path(stage, "intermediate_outputs", "prompt_preview_txt")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        preview = SYSTEM_PROMPT + "\n\n" + USER_PROMPT_TEMPLATE
+        path.write_text(preview, encoding="utf-8")
+        return {
+            "prompt_preview": path,
+            "_summary": {
+                "name": stage["prompt"]["name"],
+                "version": stage["prompt"]["version"],
+                "characters": len(preview),
+                "placeholders": ["contexto", "oracion", "candidatos_info"],
+            },
+        }
+
+    approach_by_step = {
+        "approach-a-claude": "claude",
+        "approach-b-openai": "openai",
+    }
+    if step in approach_by_step:
+        approach = approach_by_step[step]
+        require_api_key(approach)
+        raw_path = _stage_path(
+            stage, "intermediate_outputs", "raw_results_pattern", approach=approach
+        )
+        parsed_path = _stage_path(
+            stage,
+            "intermediate_outputs",
+            "parsed_results_pattern",
+            approach=approach,
+        )
+        if parsed_path.exists() and not force:
+            raise FileExistsError(
+                f"{parsed_path} already exists. Use --force to rerun this API step."
+            )
+        work = _load_work(stage)
+        runner = runner_for_approach(approach, _approach_config(stage, approach))
+        nested, metrics = process_llm_approach(
+            work,
             approach,
             runner,
-            counters,
-            float(llm_config.get("rate_limit_pause_seconds", 1.0)),
+            rate_limit_pause_seconds=float(
+                stage["llm"].get("rate_limit_pause_seconds", 1.0)
+            ),
         )
-        df_metaphors, df_ont, df_epi = flatten_approach_results(
-            nested_results, approach
+        if metrics["successful_responses"] == 0 and metrics["failed_responses"]:
+            raise RuntimeError(
+                f"{approach} returned no successful responses; no outputs were written."
+            )
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(
+            json.dumps(nested, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        results_by_approach[approach] = df_metaphors
-        if not df_ont.empty:
-            ontological_tables.append(df_ont)
-        if not df_epi.empty:
-            epistemic_tables.append(df_epi)
-        timings[approach] = metrics["seconds"]
-        costs[approach] = cost_estimate(
-            approach, metrics["tokens_in"], metrics["tokens_out"]
+        metaphors, ontological, epistemic = flatten_approach_results(nested, approach)
+        outputs = [raw_path]
+        outputs.extend(_write_dataframe(metaphors, parsed_path, write_csv))
+        outputs.extend(
+            _write_dataframe(
+                ontological,
+                _stage_path(
+                    stage,
+                    "intermediate_outputs",
+                    "ontological_pattern",
+                    approach=approach,
+                ),
+                write_csv,
+            )
         )
+        outputs.extend(
+            _write_dataframe(
+                epistemic,
+                _stage_path(
+                    stage,
+                    "intermediate_outputs",
+                    "epistemic_pattern",
+                    approach=approach,
+                ),
+                write_csv,
+            )
+        )
+        return {
+            "outputs": outputs,
+            "_summary": {
+                "approach": approach,
+                "model": stage["approaches"][approach]["model"],
+                "sentences": len(work),
+                "metaphors": len(metaphors),
+                **metrics,
+            },
+        }
 
-    comparison, _ = compare_approaches(results_by_approach, df_work, costs, timings)
-    consolidated = consolidate_approaches(results_by_approach)
-    evaluation = balanced_evaluation_sample(
-        results_by_approach,
-        int(sampling.get("evaluation_sample_per_approach", 15)),
-        int(sampling.get("random_state", 42)),
+    if step == "export-approach-results":
+        outputs = []
+        row_counts = {}
+        ontological_tables = []
+        epistemic_tables = []
+        for approach in STAGE_01_APPROACHES:
+            parsed = _load_parsed(stage, approach)
+            row_counts[approach] = len(parsed)
+            outputs.extend(
+                _write_dataframe(
+                    parsed,
+                    _stage_path(
+                        stage, "outputs", "metaphors_pattern", approach=approach
+                    ),
+                    write_csv,
+                )
+            )
+            ontological_tables.append(
+                _read_dataframe(
+                    _stage_path(
+                        stage,
+                        "intermediate_outputs",
+                        "ontological_pattern",
+                        approach=approach,
+                    )
+                )
+            )
+            epistemic_tables.append(
+                _read_dataframe(
+                    _stage_path(
+                        stage,
+                        "intermediate_outputs",
+                        "epistemic_pattern",
+                        approach=approach,
+                    )
+                )
+            )
+        outputs.extend(
+            _write_dataframe(
+                pd.concat(ontological_tables, ignore_index=True),
+                _stage_path(stage, "outputs", "ontological_correspondences_parquet"),
+                write_csv,
+            )
+        )
+        outputs.extend(
+            _write_dataframe(
+                pd.concat(epistemic_tables, ignore_index=True),
+                _stage_path(stage, "outputs", "epistemic_correspondences_parquet"),
+                write_csv,
+            )
+        )
+        return {"outputs": outputs, "_summary": {"rows": row_counts}}
+
+    if step == "load-results":
+        results = _available_results(stage)
+        if not results:
+            raise FileNotFoundError("No Claude or OpenAI approach result files found.")
+        combined = pd.concat(results.values(), ignore_index=True)
+        outputs = _write_dataframe(
+            combined,
+            _stage_path(stage, "intermediate_outputs", "loaded_results_parquet"),
+            write_csv,
+        )
+        return {
+            "outputs": outputs,
+            "_summary": {
+                "rows": {name: len(df) for name, df in results.items()},
+                "columns": list(combined.columns),
+                "missing_files": [
+                    approach
+                    for approach in STAGE_01_APPROACHES
+                    if approach not in results
+                ],
+            },
+        }
+
+    if step == "compare-approaches":
+        results = _available_results(stage)
+        comparison, kappa = compare_approaches(results, _load_work(stage))
+        if comparison is None or kappa is None:
+            raise RuntimeError("Claude and OpenAI results are both required.")
+        outputs = _write_dataframe(
+            comparison,
+            _stage_path(stage, "outputs", "approach_comparison_parquet"),
+            write_csv,
+        )
+        csv_path = _stage_path(stage, "outputs", "approach_comparison_csv")
+        comparison.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        kappa_path = _stage_path(stage, "outputs", "kappa_matrix_csv")
+        kappa.to_csv(kappa_path, encoding="utf-8-sig")
+        outputs.extend([csv_path, kappa_path])
+        return {
+            "outputs": outputs,
+            "_summary": {
+                "rows": {name: len(df) for name, df in results.items()},
+                "matched_sentences": len(
+                    set(results["claude"]["ID_oracion"])
+                    & set(results["openai"]["ID_oracion"])
+                ),
+                "kappa": float(kappa.loc["claude", "openai"]),
+            },
+        }
+
+    if step == "consolidate-results":
+        results = _available_results(stage)
+        consolidated = consolidate_approaches(results)
+        outputs = _write_dataframe(
+            consolidated,
+            _stage_path(stage, "outputs", "primary_metaphors_parquet"),
+            write_csv,
+        )
+        csv_path = _stage_path(stage, "outputs", "primary_metaphors_csv")
+        consolidated.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        outputs.append(csv_path)
+        return {
+            "outputs": outputs,
+            "_summary": {
+                "rows": len(consolidated),
+                "rule": stage["consolidation"]["rule"],
+                "by_approach": consolidated["enfoque"].value_counts().to_dict(),
+            },
+        }
+
+    if step == "human-evaluation-and-summary":
+        results = _available_results(stage)
+        human = stage["human_evaluation"]
+        evaluation = balanced_evaluation_sample(
+            results,
+            int(human.get("sample_per_approach", 15)),
+            random_state or int(human.get("random_state", 42)),
+        )
+        eval_path = _stage_path(stage, "outputs", "evaluation_sample_csv")
+        evaluation.to_csv(eval_path, index=False, encoding="utf-8-sig")
+        consolidated = _read_dataframe(
+            _stage_path(stage, "outputs", "primary_metaphors_parquet")
+        )
+        work = _load_work(stage)
+        represented = work[work["ID_oracion"].isin(consolidated["ID_oracion"])]
+        summary = {
+            "total_consolidated_rows": len(consolidated),
+            "documents": consolidated["ID_documento"].nunique(),
+            "chapters": (
+                represented["capitulo"].nunique() if "capitulo" in represented else 0
+            ),
+            "approaches": STAGE_01_APPROACHES,
+            "evaluation_sample_size": len(evaluation),
+        }
+        summary_path = _stage_path(stage, "outputs", "final_summary_json")
+        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        return {
+            "outputs": [eval_path, summary_path],
+            "_summary": summary,
+        }
+    raise ValueError(f"Unknown Stage 01 step: {step}")
+
+
+def summarise_stage_01_result(step: str, result: dict[str, Any]) -> str:
+    """Format compact Stage 01 processing diagnostics."""
+    summary = result.get("_summary", {})
+    lines = [f"Stage 01 processing step: {step}"]
+    for key, value in summary.items():
+        lines.append(f"{key.replace('_', ' ').title()}: {value}")
+    outputs = result.get("outputs", [])
+    outputs += [
+        value
+        for key, value in result.items()
+        if key != "_summary" and isinstance(value, Path)
+    ]
+    if outputs:
+        lines.append("Outputs written:")
+        lines.extend(f"  - {path}" for path in outputs)
+    return "\n".join(lines)
+
+
+def run_stage_01(config: dict[str, Any]) -> pd.DataFrame:
+    """Run the complete inspectable Stage 01 pipeline."""
+    for step in STAGE_01_STEPS:
+        run_stage_01_step(config, step)
+    return pd.read_parquet(
+        _stage_path(config["stage_01"], "outputs", "primary_metaphors_parquet")
     )
-    write_stage_01_tables(
-        df_work,
-        results_by_approach,
-        ontological_tables,
-        epistemic_tables,
-        comparison,
-        consolidated,
-        evaluation,
-        stage_config["outputs"],
-    )
-    return consolidated

@@ -24,7 +24,6 @@ except ImportError:  # pragma: no cover - exercised only in lean environments
     sns = None
 
 from ai_melt.paths import project_path
-from ai_melt.primary_metaphors import load_approach_results
 
 STAGE_00_VISUALISATION_STEPS = [
     "load",
@@ -1783,19 +1782,352 @@ def run_stage_00_visualisation(config: dict[str, Any]) -> list[Path]:
 
 
 def run_stage_01_visualisation(config: dict[str, Any]) -> list[Path]:
-    """Load configured N1 data and generate primary metaphor visualisations."""
-    viz_config = config["stage_01_visualisation"]
-    stage_config = config["stage_01"]
-    df_n0 = pd.read_csv(project_path(viz_config["inputs"]["corpus_csv"]))
-    results = load_approach_results(
-        viz_config.get("approaches", []), viz_config["inputs"]["metaphors_pattern"]
+    """Run every Stage 01 visualisation step."""
+    written = []
+    for step in STAGE_01_VISUALISATION_STEPS:
+        result = run_stage_01_visualisation_step(config, step)
+        written.extend(stage_00_visualisation_output_paths(result))
+    return written
+
+
+STAGE_01_VISUALISATION_STEPS = [
+    "load",
+    "metaphors-by-chapter-and-approach",
+    "top-domains-aggregated",
+    "top-source-domains-by-approach",
+    "top-target-domains-by-approach",
+    "source-target-heatmap",
+    "focus-pos-by-approach",
+    "conceptual-metaphor-wordcloud",
+    "epistemic-correspondences",
+    "sankey-by-approach",
+    "sankey-consolidated",
+    "approach-concordance-matrix",
+    "summary",
+]
+
+
+def _read_n1(path: Path) -> pd.DataFrame:
+    return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+
+
+def _load_stage_01_viz(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], pd.DataFrame, dict[str, pd.DataFrame]]:
+    viz = config["stage_01_visualisation"]
+    n0 = _read_n1(project_path(viz["inputs"]["n0_corpus"]))
+    results = {}
+    for approach in viz["approaches"]:
+        path = project_path(
+            viz["inputs"]["metaphors_pattern"].format(approach=approach)
+        )
+        if path.exists():
+            results[approach] = _read_n1(path)
+    return viz, n0, results
+
+
+def _n1_dirs(viz: dict[str, Any]) -> dict[str, Path]:
+    return {
+        key.replace("_dir", ""): project_path(value)
+        for key, value in viz["outputs"].items()
+    }
+
+
+def _n1_table(viz: dict[str, Any], key: str, df: pd.DataFrame) -> Path:
+    path = _n1_dirs(viz)["tables"] / viz["table_names"][key]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+    return path
+
+
+def _n1_domain_table(
+    results: dict[str, pd.DataFrame], column: str, top_n: int
+) -> pd.DataFrame:
+    rows = []
+    for approach, df in results.items():
+        counts = df[column].dropna()
+        counts = counts[counts != ""].value_counts().head(top_n)
+        rows.extend(
+            {
+                "approach": approach,
+                "domain_type": column,
+                "domain": domain,
+                "count": count,
+            }
+            for domain, count in counts.items()
+        )
+    return pd.DataFrame(rows)
+
+
+def _plot_domains_by_approach(
+    table: pd.DataFrame,
+    column_label: str,
+    colors: dict[str, str],
+    output: Path,
+    top_n: int,
+) -> Path:
+    approaches = table["approach"].unique().tolist()
+    fig, axes = plt.subplots(1, len(approaches), figsize=(6 * len(approaches), 6))
+    axes = np.atleast_1d(axes)
+    for axis, approach in zip(axes, approaches, strict=False):
+        subset = table[table["approach"] == approach]
+        axis.barh(
+            subset["domain"][::-1],
+            subset["count"][::-1],
+            color=colors[approach],
+        )
+        axis.set_title(f"Top {top_n} dominios {column_label} - {approach}")
+        axis.set_xlabel("Frecuencia")
+    return save_current_figure(output)
+
+
+def run_stage_01_visualisation_step(
+    config: dict[str, Any], step: str
+) -> dict[str, Any]:
+    """Run one Stage 01 visualisation step."""
+    viz, n0, results = _load_stage_01_viz(config)
+    if not results:
+        raise FileNotFoundError("No Claude or OpenAI Stage 01 results found.")
+    dirs = _n1_dirs(viz)
+    colors = viz["colors"]
+    all_results = pd.concat(results.values(), ignore_index=True)
+
+    if step == "load":
+        rows = [
+            {
+                "approach": approach,
+                "rows": len(df),
+                "documents": df["ID_documento"].nunique(),
+            }
+            for approach, df in results.items()
+        ]
+        table = _n1_table(viz, "load_summary", pd.DataFrame(rows))
+        return {
+            "table": table,
+            "_summary": {
+                "n0_rows": len(n0),
+                "approaches": list(results),
+                "rows": {key: len(value) for key, value in results.items()},
+            },
+        }
+
+    top_n = int(viz["top_domains"])
+
+    if step == "metaphors-by-chapter-and-approach":
+        rows = []
+        for approach, df in results.items():
+            joined = df.merge(
+                n0[["ID_oracion", "capitulo"]].drop_duplicates(),
+                on="ID_oracion",
+                how="left",
+            )
+            counts = joined["capitulo"].value_counts()
+            rows.extend(
+                {"approach": approach, "chapter": chapter, "count": count}
+                for chapter, count in counts.items()
+            )
+        table = _n1_table(viz, "metaphors_by_chapter", pd.DataFrame(rows))
+        figures = plot_metaphors_by_chapter(results, n0, dirs["figures"], colors, viz)
+        return {"table": table, "figures": figures, "_summary": {"rows": len(rows)}}
+
+    if step == "top-domains-aggregated":
+        source = all_results["dominio_fuente"].value_counts().head(top_n)
+        target = all_results["dominio_meta"].value_counts().head(top_n)
+        table_df = pd.concat(
+            [
+                source.rename_axis("domain")
+                .reset_index(name="count")
+                .assign(domain_type="source"),
+                target.rename_axis("domain")
+                .reset_index(name="count")
+                .assign(domain_type="target"),
+            ]
+        )
+        table = _n1_table(viz, "top_domains_aggregated", table_df)
+        figures = plot_top_domains(results, dirs["figures"], viz)
+        return {"table": table, "figures": figures, "_summary": {"top_n": top_n}}
+
+    if step in {
+        "top-source-domains-by-approach",
+        "top-target-domains-by-approach",
+    }:
+        source = step.startswith("top-source")
+        column = "dominio_fuente" if source else "dominio_meta"
+        key = "source_domains_by_approach" if source else "target_domains_by_approach"
+        table_df = _n1_domain_table(results, column, top_n)
+        table = _n1_table(viz, key, table_df)
+        figure = _plot_domains_by_approach(
+            table_df,
+            "fuente" if source else "meta",
+            colors,
+            dirs["figures"] / viz["figure_names"][key],
+            top_n,
+        )
+        return {"table": table, "figure": figure, "_summary": {"top_n": top_n}}
+
+    if step == "source-target-heatmap":
+        clean = all_results[
+            all_results["dominio_fuente"].notna()
+            & (all_results["dominio_fuente"] != "")
+        ]
+        top_source = (
+            clean["dominio_fuente"].value_counts().head(int(viz["heatmap_top_n"])).index
+        )
+        top_target = (
+            clean["dominio_meta"].value_counts().head(int(viz["heatmap_top_n"])).index
+        )
+        cross = pd.crosstab(
+            clean[clean["dominio_fuente"].isin(top_source)]["dominio_fuente"],
+            clean[clean["dominio_meta"].isin(top_target)]["dominio_meta"],
+        )
+        table = _n1_table(viz, "source_target_heatmap", cross.reset_index())
+        figures = plot_domain_heatmap(results, dirs["figures"], viz)
+        return {"table": table, "figures": figures, "_summary": {"cells": cross.size}}
+
+    if step == "focus-pos-by-approach":
+        table_df = (
+            all_results.groupby(["enfoque", "foco_part_of_speech"])
+            .size()
+            .reset_index(name="count")
+        )
+        table = _n1_table(viz, "focus_pos", table_df)
+        figures = plot_focus_pos(results, dirs["figures"], colors, viz)
+        return {"table": table, "figures": figures, "_summary": {"rows": len(table_df)}}
+
+    if step == "conceptual-metaphor-wordcloud":
+        counts = all_results["metafora_conceptual"].dropna()
+        counts = counts[counts != ""].value_counts()
+        table = _n1_table(
+            viz,
+            "conceptual_metaphors",
+            counts.rename_axis("metaphor").reset_index(name="count"),
+        )
+        from wordcloud import WordCloud
+
+        wordcloud = WordCloud(
+            width=int(viz["wordcloud"]["width"]),
+            height=int(viz["wordcloud"]["height"]),
+            max_words=int(viz["wordcloud"]["max_words"]),
+            background_color="white",
+            colormap=viz["wordcloud"]["colormap"],
+            collocations=False,
+        ).generate(" ".join(all_results["metafora_conceptual"].dropna()))
+        fig, ax = plt.subplots(figsize=(14, 6))
+        ax.imshow(wordcloud, interpolation="bilinear")
+        ax.axis("off")
+        figure = save_current_figure(
+            dirs["figures"] / viz["figure_names"]["conceptual_metaphor_wordcloud"]
+        )
+        return {"table": table, "figure": figure, "_summary": {"unique": len(counts)}}
+
+    if step == "epistemic-correspondences":
+        path = project_path(viz["inputs"]["epistemic_correspondences"])
+        epistemic = _read_n1(path) if path.exists() else pd.DataFrame()
+        filtered = (
+            epistemic[epistemic["enfoque"].isin(viz["approaches"])]
+            if not epistemic.empty
+            else epistemic
+        )
+        counts = (
+            filtered.groupby(["tipo_inferencia", "enfoque"])
+            .size()
+            .reset_index(name="count")
+            if not filtered.empty
+            else pd.DataFrame(columns=["tipo_inferencia", "enfoque", "count"])
+        )
+        table = _n1_table(viz, "epistemic_correspondences", counts)
+        figures = []
+        if not filtered.empty:
+            figures = visualise_primary_metaphors(n0, {}, viz, colors, filtered)
+        return {"table": table, "figures": figures, "_summary": {"rows": len(filtered)}}
+
+    if step == "sankey-by-approach":
+        rows = []
+        html = []
+        for approach, df in results.items():
+            figure = build_sankey_per_approach(
+                df, approach, colors[approach], int(viz["sankey_top_n"])
+            )
+            if figure is not None:
+                path = dirs["html"] / viz["figure_names"]["sankey_by_approach"].format(
+                    approach=approach
+                )
+                path.parent.mkdir(parents=True, exist_ok=True)
+                pio.write_html(figure, path, include_plotlyjs="cdn")
+                html.append(path)
+                rows.append({"approach": approach, "html": str(path)})
+        table = _n1_table(viz, "sankey_by_approach", pd.DataFrame(rows))
+        return {"table": table, "html": html, "_summary": {"approaches": len(html)}}
+
+    if step == "sankey-consolidated":
+        figure = build_sankey_consolidated(
+            results,
+            list(results),
+            colors,
+            int(viz["consolidated_sankey_top_n"]),
+        )
+        html = dirs["html"] / viz["figure_names"]["sankey_consolidated"]
+        html.parent.mkdir(parents=True, exist_ok=True)
+        if figure is None:
+            raise RuntimeError("No domain data available for consolidated Sankey.")
+        pio.write_html(figure, html, include_plotlyjs="cdn")
+        table_df = (
+            all_results.groupby(["dominio_meta", "dominio_fuente"])
+            .size()
+            .reset_index(name="count")
+            .sort_values("count", ascending=False)
+            .head(int(viz["consolidated_sankey_top_n"]))
+        )
+        table = _n1_table(viz, "sankey_consolidated", table_df)
+        return {"table": table, "html": html, "_summary": {"pairs": len(table_df)}}
+
+    if step == "approach-concordance-matrix":
+        path = project_path(viz["inputs"]["kappa_matrix_csv"])
+        matrix = pd.read_csv(path, index_col=0)
+        table = _n1_table(viz, "concordance_matrix", matrix.reset_index())
+        fig, ax = plt.subplots(figsize=(8, 6))
+        if sns is not None:
+            sns.heatmap(
+                matrix.astype(float),
+                annot=True,
+                fmt=".3f",
+                cmap="RdYlGn",
+                center=0.5,
+                vmin=-0.2,
+                vmax=1.0,
+                ax=ax,
+            )
+        else:
+            ax.imshow(matrix.astype(float))
+        figure = save_current_figure(
+            dirs["figures"] / viz["figure_names"]["agreement_heatmap"]
+        )
+        return {
+            "table": table,
+            "figure": figure,
+            "_summary": {"approaches": len(matrix)},
+        }
+
+    if step == "summary":
+        paths = []
+        for directory in dirs.values():
+            if directory.exists():
+                paths.extend(path for path in directory.iterdir() if path.is_file())
+        table_df = export_summary_table(paths)
+        table = _n1_table(viz, "summary", table_df)
+        return {"table": table, "_summary": {"outputs": len(table_df)}}
+    raise ValueError(f"Unknown Stage 01 visualisation step: {step}")
+
+
+def summarise_stage_01_visualisation_result(step: str, result: dict[str, Any]) -> str:
+    """Format compact Stage 01 visualisation diagnostics."""
+    lines = [f"Stage 01 visualisation step: {step}"]
+    lines.extend(
+        f"{key.replace('_', ' ').title()}: {value}"
+        for key, value in result.get("_summary", {}).items()
     )
-    epistemic_path = project_path(viz_config["inputs"]["epistemic_correspondences_csv"])
-    epistemic = pd.read_csv(epistemic_path) if epistemic_path.exists() else None
-    return visualise_primary_metaphors(
-        df_n0,
-        results,
-        viz_config,
-        stage_config.get("approaches", {}).get("colors", {}),
-        epistemic,
-    )
+    outputs = stage_00_visualisation_output_paths(result)
+    if outputs:
+        lines.append("Outputs written:")
+        lines.extend(f"  - {path}" for path in outputs)
+    return "\n".join(lines)

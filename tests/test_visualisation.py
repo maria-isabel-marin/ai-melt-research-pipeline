@@ -13,6 +13,7 @@ from ai_melt.visualisation import (
     plot_corpus_size_by_volume,
     plot_top_domains,
     run_stage_00_visualisation_step,
+    run_stage_01_visualisation_step,
     safe_json_loads,
     sentence_length_summary_table,
 )
@@ -136,3 +137,46 @@ def test_primary_metaphor_plot_and_sankey_smoke(tmp_path) -> None:
     assert written[0].exists()
     assert sankey is not None
     assert consolidated is not None
+
+
+def test_stage_01_visualisation_load_step(tmp_path) -> None:
+    n0_path = tmp_path / "n0.parquet"
+    pattern = str(tmp_path / "n1_{approach}.parquet")
+    tables = tmp_path / "tables"
+    pd.DataFrame(
+        {
+            "ID_oracion": ["S-1"],
+            "ID_documento": ["DOC-1"],
+            "capitulo": ["C1"],
+        }
+    ).to_parquet(n0_path, index=False)
+    for approach in ["claude", "openai"]:
+        pd.DataFrame(
+            {
+                "ID_expresion": [f"M-{approach}"],
+                "ID_oracion": ["S-1"],
+                "ID_documento": ["DOC-1"],
+                "enfoque": [approach],
+            }
+        ).to_parquet(pattern.format(approach=approach), index=False)
+    config = {
+        "stage_01_visualisation": {
+            "inputs": {
+                "n0_corpus": n0_path,
+                "metaphors_pattern": pattern,
+            },
+            "outputs": {
+                "figures_dir": tmp_path / "figures",
+                "tables_dir": tables,
+                "html_dir": tmp_path / "html",
+            },
+            "approaches": ["claude", "openai"],
+            "colors": {"claude": "#3B8BD4", "openai": "#D85A30"},
+            "table_names": {"load_summary": "load.csv"},
+        }
+    }
+
+    result = run_stage_01_visualisation_step(config, "load")
+
+    assert result["table"].exists()
+    assert result["_summary"]["approaches"] == ["claude", "openai"]

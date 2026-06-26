@@ -54,6 +54,50 @@ STAGE_00_VISUALISATION_STEP_TYPES = {
     "footnotes": "diagnostic",
     "export-summary": "table",
 }
+STAGE_01_STEP_ORDER = [
+    "config",
+    "load-data",
+    "design-prompt",
+    "approach-a-claude",
+    "approach-b-openai",
+    "export-approach-results",
+    "load-results",
+    "compare-approaches",
+    "consolidate-results",
+    "human-evaluation-and-summary",
+]
+STAGE_01_STEP_TYPES = {
+    "config": "diagnostic",
+    "load-data": "processing",
+    "design-prompt": "diagnostic",
+    "approach-a-claude": "api",
+    "approach-b-openai": "api",
+    "export-approach-results": "export",
+    "load-results": "processing",
+    "compare-approaches": "analysis",
+    "consolidate-results": "processing",
+    "human-evaluation-and-summary": "validation",
+}
+STAGE_01_VISUALISATION_STEP_ORDER = [
+    "load",
+    "metaphors-by-chapter-and-approach",
+    "top-domains-aggregated",
+    "top-source-domains-by-approach",
+    "top-target-domains-by-approach",
+    "source-target-heatmap",
+    "focus-pos-by-approach",
+    "conceptual-metaphor-wordcloud",
+    "epistemic-correspondences",
+    "sankey-by-approach",
+    "sankey-consolidated",
+    "approach-concordance-matrix",
+    "summary",
+]
+STAGE_01_VISUALISATION_STEP_TYPES = {
+    step: "visualisation" for step in STAGE_01_VISUALISATION_STEP_ORDER
+}
+STAGE_01_VISUALISATION_STEP_TYPES["load"] = "diagnostic"
+STAGE_01_VISUALISATION_STEP_TYPES["summary"] = "table"
 
 
 def _root(root: Path | None = None) -> Path:
@@ -97,6 +141,241 @@ def reset_stage_status(path: str | Path | None = None) -> bool:
         resolved.unlink()
         return True
     return False
+
+
+def stage_01_status_path(config: dict[str, Any], root: Path | None = None) -> Path:
+    """Return the configured Stage 01 processing status path."""
+    return project_path(config["stage_01"]["status"]["file"], _root(root))
+
+
+def update_named_stage_status(
+    stage_name: str,
+    step: str,
+    result: Any,
+    path: str | Path,
+    command: str | None = None,
+    parameters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Record a successful step for any named local stage."""
+    status = load_stage_status(path)
+    stage = status.setdefault("stages", {}).setdefault(stage_name, {"steps": {}})
+    stage["stage"] = stage_name
+    stage["updated_at"] = datetime.now(timezone.utc).isoformat()
+    stage.setdefault("steps", {})[step] = {
+        "stage": stage_name,
+        "step": step,
+        "status": "completed",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "outputs": [str(output) for output in _result_outputs(result)],
+        "summary": _result_summary(result),
+        "command": command,
+        "parameters": _json_safe(parameters or {}),
+    }
+    save_stage_status(status, path)
+    return status
+
+
+def _named_status_report(
+    stage_name: str,
+    step_order: list[str],
+    step_types: dict[str, str],
+    expected: dict[str, list[Path]],
+    path: str | Path,
+    command_script: str,
+    title: str,
+) -> dict[str, Any]:
+    status = load_stage_status(path)
+    records = status.get("stages", {}).get(stage_name, {}).get("steps", {})
+    rows = []
+    for step in step_order:
+        record = records.get(step, {})
+        expected_paths = expected.get(step, [])
+        missing = [output for output in expected_paths if not output.exists()]
+        complete = bool(expected_paths) and not missing
+        if record.get("status") == "completed" and not missing:
+            complete = True
+        rows.append(
+            {
+                "step": step,
+                "type": step_types[step],
+                "status": "completed" if complete else "pending",
+                "recorded_status": record.get("status", "pending"),
+                "missing_outputs": missing,
+                "record": record,
+            }
+        )
+    next_step = get_next_recommended_step_from_rows(rows)
+    return {
+        "rows": rows,
+        "next_step": next_step,
+        "command_script": command_script,
+        "title": title,
+    }
+
+
+def configured_stage_01_outputs(
+    config: dict[str, Any], root: Path | None = None
+) -> dict[str, list[Path]]:
+    """Map Stage 01 processing steps to expected output paths."""
+    stage = config["stage_01"]
+    base = _root(root)
+
+    def path(section: str, key: str, **values: str) -> Path:
+        return project_path(stage[section][key].format(**values), base)
+
+    return {
+        "config": [path("outputs", "config_summary_json")],
+        "load-data": [path("intermediate_outputs", "work_parquet")],
+        "design-prompt": [path("intermediate_outputs", "prompt_preview_txt")],
+        "approach-a-claude": [
+            path("intermediate_outputs", "raw_results_pattern", approach="claude"),
+            path("intermediate_outputs", "parsed_results_pattern", approach="claude"),
+        ],
+        "approach-b-openai": [
+            path("intermediate_outputs", "raw_results_pattern", approach="openai"),
+            path("intermediate_outputs", "parsed_results_pattern", approach="openai"),
+        ],
+        "export-approach-results": [
+            path("outputs", "metaphors_pattern", approach="claude"),
+            path("outputs", "metaphors_pattern", approach="openai"),
+        ],
+        "load-results": [path("intermediate_outputs", "loaded_results_parquet")],
+        "compare-approaches": [
+            path("outputs", "approach_comparison_parquet"),
+            path("outputs", "kappa_matrix_csv"),
+        ],
+        "consolidate-results": [path("outputs", "primary_metaphors_parquet")],
+        "human-evaluation-and-summary": [
+            path("outputs", "evaluation_sample_csv"),
+            path("outputs", "final_summary_json"),
+        ],
+    }
+
+
+def get_stage_01_status_report(
+    config: dict[str, Any],
+    path: str | Path | None = None,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Return the Stage 01 processing status report."""
+    resolved = path or stage_01_status_path(config, root)
+    return _named_status_report(
+        "stage_01",
+        STAGE_01_STEP_ORDER,
+        STAGE_01_STEP_TYPES,
+        configured_stage_01_outputs(config, root),
+        resolved,
+        "scripts/01_process_primary_metaphors.py",
+        "Stage 01 processing status",
+    )
+
+
+def next_stage_01_command(config: dict[str, Any]) -> str:
+    """Return the next recommended Stage 01 processing command."""
+    step = get_stage_01_status_report(config)["next_step"]
+    if step is None:
+        return "Stage 01 processing is complete."
+    return f"python scripts/01_process_primary_metaphors.py --step {step}"
+
+
+def stage_01_visualisation_status_path(
+    config: dict[str, Any], root: Path | None = None
+) -> Path:
+    """Return the configured Stage 01 visualisation status path."""
+    return project_path(config["stage_01_visualisation"]["status"]["file"], _root(root))
+
+
+def configured_stage_01_visualisation_outputs(
+    config: dict[str, Any], root: Path | None = None
+) -> dict[str, list[Path]]:
+    """Map Stage 01 visualisation steps to expected output paths."""
+    viz = config["stage_01_visualisation"]
+    base = _root(root)
+    figures = project_path(viz["outputs"]["figures_dir"], base)
+    tables = project_path(viz["outputs"]["tables_dir"], base)
+    html = project_path(viz["outputs"]["html_dir"], base)
+
+    def table(key: str) -> Path:
+        return tables / viz["table_names"][key]
+
+    def figure(key: str) -> Path:
+        return figures / viz["figure_names"][key]
+
+    return {
+        "load": [table("load_summary")],
+        "metaphors-by-chapter-and-approach": [
+            table("metaphors_by_chapter"),
+            figure("metaphors_by_chapter"),
+        ],
+        "top-domains-aggregated": [
+            table("top_domains_aggregated"),
+            figure("top_domains"),
+        ],
+        "top-source-domains-by-approach": [
+            table("source_domains_by_approach"),
+            figure("source_domains_by_approach"),
+        ],
+        "top-target-domains-by-approach": [
+            table("target_domains_by_approach"),
+            figure("target_domains_by_approach"),
+        ],
+        "source-target-heatmap": [
+            table("source_target_heatmap"),
+            figure("domain_heatmap"),
+        ],
+        "focus-pos-by-approach": [table("focus_pos"), figure("focus_pos")],
+        "conceptual-metaphor-wordcloud": [
+            table("conceptual_metaphors"),
+            figure("conceptual_metaphor_wordcloud"),
+        ],
+        "epistemic-correspondences": [
+            table("epistemic_correspondences"),
+            figure("epistemic_correspondences"),
+        ],
+        "sankey-by-approach": [
+            table("sankey_by_approach"),
+            *[
+                html
+                / viz["figure_names"]["sankey_by_approach"].format(approach=approach)
+                for approach in viz["approaches"]
+            ],
+        ],
+        "sankey-consolidated": [
+            table("sankey_consolidated"),
+            html / viz["figure_names"]["sankey_consolidated"],
+        ],
+        "approach-concordance-matrix": [
+            table("concordance_matrix"),
+            figure("agreement_heatmap"),
+        ],
+        "summary": [table("summary")],
+    }
+
+
+def get_stage_01_visualisation_status_report(
+    config: dict[str, Any],
+    path: str | Path | None = None,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Return the Stage 01 visualisation status report."""
+    resolved = path or stage_01_visualisation_status_path(config, root)
+    return _named_status_report(
+        "stage_01_visualisation",
+        STAGE_01_VISUALISATION_STEP_ORDER,
+        STAGE_01_VISUALISATION_STEP_TYPES,
+        configured_stage_01_visualisation_outputs(config, root),
+        resolved,
+        "scripts/01_visualise_primary_metaphors.py",
+        "Stage 01 visualisation status",
+    )
+
+
+def next_stage_01_visualisation_command(config: dict[str, Any]) -> str:
+    """Return the next recommended Stage 01 visualisation command."""
+    step = get_stage_01_visualisation_status_report(config)["next_step"]
+    if step is None:
+        return "Stage 01 visualisation is complete."
+    return f"python scripts/01_visualise_primary_metaphors.py --step {step}"
 
 
 def configured_stage_00_outputs(
@@ -565,4 +844,29 @@ def format_visualisation_status_report(report: dict[str, Any]) -> str:
                 f"  - {row['step']} is recorded as completed, "
                 f"but missing: {_format_paths(row['missing_outputs'])}"
             )
+    return "\n".join(lines)
+
+
+def format_named_status_report(report: dict[str, Any]) -> str:
+    """Format a generic named-stage status report."""
+    lines = [report["title"], ""]
+    header = (
+        f"{'Step':<36} {'Type':<12} {'Status':<10} {'Recorded':<10} Missing outputs"
+    )
+    lines.extend([header, "-" * len(header)])
+    for row in report["rows"]:
+        lines.append(
+            f"{row['step']:<36} {row['type']:<12} {row['status']:<10} "
+            f"{row['recorded_status']:<10} {_format_paths(row['missing_outputs'])}"
+        )
+    lines.append("")
+    step = report["next_step"]
+    if step is None:
+        lines.append("Next recommended step: none (complete)")
+    else:
+        lines.append(f"Next recommended step: {step}")
+        lines.append(
+            "Next recommended command: "
+            f"python {report['command_script']} --step {step}"
+        )
     return "\n".join(lines)

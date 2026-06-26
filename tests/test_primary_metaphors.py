@@ -1,6 +1,7 @@
 import pandas as pd
 
 from ai_melt.primary_metaphors import (
+    STAGE_01_APPROACHES,
     balanced_evaluation_sample,
     compare_approaches,
     consolidate_approaches,
@@ -8,6 +9,8 @@ from ai_melt.primary_metaphors import (
     flatten_approach_results,
     prepare_work_dataframe,
     process_llm_approach,
+    require_api_key,
+    run_stage_01_step,
 )
 
 
@@ -107,3 +110,70 @@ def test_consolidate_compare_and_evaluation_sample() -> None:
     assert consolidated["confianza_cross_enfoques"].max() == 2
     assert comparison is not None and kappa is not None
     assert len(evaluation) == 2
+
+
+def test_stage_01_supports_only_claude_and_openai() -> None:
+    assert STAGE_01_APPROACHES == ["claude", "openai"]
+
+
+def test_missing_api_keys_fail_clearly(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "ai_melt.primary_metaphors.load_dotenv", lambda *args, **kwargs: False
+    )
+
+    for approach, env_name in [
+        ("claude", "ANTHROPIC_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+    ]:
+        try:
+            require_api_key(approach)
+        except RuntimeError as exc:
+            assert env_name in str(exc)
+            assert ".env" in str(exc)
+        else:
+            raise AssertionError("Expected missing key error")
+
+
+def test_stage_01_load_data_and_prompt_steps(tmp_path) -> None:
+    input_path = tmp_path / "n0.parquet"
+    work_path = tmp_path / "work.parquet"
+    prompt_path = tmp_path / "prompt.txt"
+    pd.DataFrame(
+        {
+            "ID_documento": ["DOC-1", "DOC-1"],
+            "ID_oracion": ["S-1", "S-2"],
+            "oracion_texto": ["La paz se construye.", "La guerra deja heridas."],
+            "pagina": [1, 1],
+            "capitulo": ["C1", "C1"],
+        }
+    ).to_parquet(input_path, index=False)
+    config = {
+        "stage_01": {
+            "inputs": {"n0_corpus": input_path},
+            "prompt": {"name": "mipvu", "version": "1"},
+            "approaches": {
+                "claude": {"enabled": True, "model": "claude"},
+                "openai": {"enabled": True, "model": "openai"},
+            },
+            "llm": {},
+            "sampling": {
+                "sample_mode": False,
+                "sample_size": 50,
+                "random_state": 42,
+            },
+            "intermediate_outputs": {
+                "work_parquet": work_path,
+                "prompt_preview_txt": prompt_path,
+            },
+        }
+    }
+
+    loaded = run_stage_01_step(config, "load-data", write_csv=True)
+    prompt = run_stage_01_step(config, "design-prompt")
+
+    assert loaded["_summary"]["rows_retained"] == 2
+    assert work_path.exists()
+    assert work_path.with_suffix(".csv").exists()
+    assert prompt["prompt_preview"].exists()
