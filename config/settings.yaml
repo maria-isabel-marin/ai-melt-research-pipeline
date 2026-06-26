@@ -151,107 +151,147 @@ stage_00:
 
 stage_00_visualisation:
   input: data/processed/n0_corpus.csv
+  inputs:
+    corpus_csv: data/processed/n0_corpus.csv
+    footnotes_csv: outputs/tables/n0_footnotes.csv
   outputs:
     figures_dir: outputs/figures
     tables_dir: outputs/tables
+    html_dir: outputs/html
   chapter_order: aparicion
   top_chapters: 30
   top_entities: 20
   top_pos: 12
+  histogram_bins:
+    corpus_sentence_lengths: 50
+    volume_sentence_lengths: 40
+  figure_sizes:
+    default: [12, 6]
+    volume_bars: [12, 6]
+    sentence_hist: [12, 5]
+    sentence_boxplot: [12, 6]
+    wordcloud_corpus: [14, 6]
+    wordcloud_volume: [14, 6]
   wordcloud:
     corpus_max_words: 150
+    corpus_width: 1200
+    corpus_height: 500
     volume_max_words: 80
+    volume_width: 800
+    volume_height: 400
     min_volume_lemmas: 10
   figure_names:
     sentences_by_volume: viz_oraciones_por_volumen.png
     words_by_volume: viz_palabras_por_volumen.png
     sentences_by_chapter_global: viz_oraciones_por_capitulo_global.png
     words_by_chapter_global: viz_palabras_por_capitulo_global.png
+    sentences_by_chapter_volume: viz_oraciones_{slug}.png
+    words_by_chapter_volume: viz_palabras_{slug}.png
     sentence_length_corpus: viz_longitud_corpus.png
+    sentence_length_volume: viz_longitud_{slug}.png
     sentence_length_by_volume: viz_longitud_por_volumen.png
     named_entities_top: viz_NER_top20_{slug}.png
     named_entities_types: viz_NER_tipos_{slug}.png
     pos_distribution: viz_pos_{slug}.png
     wordcloud: viz_wordcloud_{slug}.png
+  table_names:
+    corpus_overview_csv: n0_viz_corpus_overview.csv
+    document_distribution_csv: n0_viz_document_distribution.csv
+    chapter_distribution_csv: n0_viz_chapter_distribution.csv
+    sentence_lengths_csv: n0_viz_sentence_lengths.csv
+    named_entities_csv: n0_viz_named_entities.csv
+    pos_distribution_csv: n0_viz_pos_distribution.csv
+    word_counts_csv: n0_viz_word_counts.csv
+    content_lemmas_csv: n0_viz_content_lemmas.csv
+    footnotes_summary_csv: n0_viz_footnotes_summary.csv
+    export_summary_csv: n0_viz_export_summary.csv
 
 stage_01:
   inputs:
-    corpus_csv: data/processed/n0_corpus.csv
-  outputs:
-    metaphors_pattern: data/processed/n1_metaforas_{approach}.csv
-    primary_metaphors_csv: data/processed/n1_metaforas_primarias.csv
-    sentence_sample_csv: data/interim/n1_muestra_oraciones.csv
-    ontological_correspondences_csv: data/processed/n1_correspondencias_ontologicas.csv
-    epistemic_correspondences_csv: data/processed/n1_correspondencias_epistemicas.csv
-    approach_comparison_csv: outputs/tables/n1_comparacion_enfoques.csv
-    evaluation_sample_csv: outputs/tables/n1_muestra_evaluacion.csv
+    n0_corpus: data/processed/n0_corpus.parquet
+  prompt:
+    name: mipvu-primary-metaphor
+    version: "1"
   approaches:
-    active:
-      - claude
-      - openai
-    visualise:
-      - claude
-      - openai
-    colors:
-      claude: "#3B8BD4"
-      openai: "#D85A30"
-      huggingface: "#1D9E75"
-      embeddings: "#7F77DD"
-      groq_llama: "#E8A838"
-      gemini: "#FF6B8A"
+    claude:
+      enabled: true
+      model: claude-sonnet-4-5
+      color: "#3B8BD4"
+    openai:
+      enabled: true
+      model: gpt-4.1-mini
+      color: "#D85A30"
   llm:
-    standalone_mode: true
-    hybrid_llm: openai
-    claude_model: claude-sonnet-4-5
-    openai_model: gpt-4.1-mini
-    groq_model: llama-3.1-8b-instant
-    gemini_model: gemini-2.0-flash
     temperature: 0.1
-    max_retries: 3
-    rate_limit_pause_seconds: 1.0
     max_tokens: 4096
-  local_models:
-    huggingface_model: HiTZ/mdeberta-base-metaphor-detection-es
-    embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-    embedding_contrast_threshold: 0.35
-    target_pos:
-      - VERB
-      - NOUN
-      - ADJ
+    max_retries: 3
+    retry_backoff_seconds: 2
+    rate_limit_pause_seconds: 1.0
   sampling:
     sample_mode: true
     sample_size: 50
     random_state: 42
-    evaluation_sample_per_approach: 15
-  columns:
-    sentence_id: ID_oracion
-    document_id: ID_documento
-    page: pagina
-    sentence_text: oracion_texto
-    context: contexto_ampliado
-    focus: foco
-    focus_lemma: foco_lemma
-    expression_id: ID_expresion
-    approach: enfoque
+  human_evaluation:
+    sample_per_approach: 15
+    random_state: 42
+  comparison:
+    metric: cohen_kappa
+    level: sentence
+  consolidation:
+    rule: concatenate_and_count_unique_approaches_by_sentence_and_focus
+  debug_outputs:
+    write_csv_copies: false
+    csv_preview_max_text_length: 2000
+    include_full_text_in_csv: true
+  intermediate_outputs:
+    work_parquet: data/interim/n1_work_sentences.parquet
+    prompt_preview_txt: data/interim/n1_prompt_preview.txt
+    raw_results_pattern: data/interim/n1_raw_{approach}.json
+    parsed_results_pattern: data/interim/n1_parsed_{approach}.parquet
+    ontological_pattern: data/interim/n1_correspondencias_ontologicas_{approach}.parquet
+    epistemic_pattern: data/interim/n1_correspondencias_epistemicas_{approach}.parquet
+    loaded_results_parquet: data/interim/n1_loaded_results.parquet
+  outputs:
+    config_summary_json: outputs/tables/n1_config_summary.json
+    metaphors_pattern: data/processed/n1_metaforas_{approach}.parquet
+    ontological_correspondences_parquet: data/processed/n1_correspondencias_ontologicas.parquet
+    epistemic_correspondences_parquet: data/processed/n1_correspondencias_epistemicas.parquet
+    approach_comparison_parquet: outputs/tables/n1_comparacion_enfoques.parquet
+    approach_comparison_csv: outputs/tables/n1_comparacion_enfoques.csv
+    kappa_matrix_csv: outputs/tables/n1_matriz_concordancia.csv
+    primary_metaphors_parquet: data/processed/n1_metaforas_primarias.parquet
+    primary_metaphors_csv: data/processed/n1_metaforas_primarias.csv
+    evaluation_sample_csv: outputs/tables/n1_muestra_evaluacion.csv
+    final_summary_json: outputs/tables/n1_summary.json
+  status:
+    file: outputs/logs/stage_01_status.json
 
 stage_01_visualisation:
   inputs:
-    corpus_csv: data/processed/n0_corpus.csv
-    metaphors_pattern: data/processed/n1_metaforas_{approach}.csv
-    epistemic_correspondences_csv: data/processed/n1_correspondencias_epistemicas.csv
-    approach_comparison_csv: outputs/tables/n1_comparacion_enfoques.csv
+    n0_corpus: data/processed/n0_corpus.parquet
+    metaphors_pattern: data/processed/n1_metaforas_{approach}.parquet
+    consolidated_results: data/processed/n1_metaforas_primarias.parquet
+    epistemic_correspondences: data/processed/n1_correspondencias_epistemicas.parquet
+    kappa_matrix_csv: outputs/tables/n1_matriz_concordancia.csv
   outputs:
     figures_dir: outputs/figures
+    tables_dir: outputs/tables
     html_dir: outputs/html
   approaches:
     - claude
     - openai
-    - huggingface
-    - embeddings
+  colors:
+    claude: "#3B8BD4"
+    openai: "#D85A30"
   top_domains: 20
   heatmap_top_n: 15
   sankey_top_n: 20
   consolidated_sankey_top_n: 25
+  wordcloud:
+    width: 1200
+    height: 500
+    max_words: 80
+    colormap: magma
   figure_names:
     metaphors_by_chapter: viz_metaforas_por_capitulo.png
     top_domains: viz_top_dominios.png
@@ -264,3 +304,19 @@ stage_01_visualisation:
     agreement_heatmap: viz_matriz_concordancia.png
     sankey_by_approach: viz_sankey_{approach}.html
     sankey_consolidated: viz_sankey_consolidado.html
+  table_names:
+    load_summary: n1_viz_load_summary.csv
+    metaphors_by_chapter: n1_viz_metaphors_by_chapter.csv
+    top_domains_aggregated: n1_viz_top_domains_aggregated.csv
+    source_domains_by_approach: n1_viz_source_domains_by_approach.csv
+    target_domains_by_approach: n1_viz_target_domains_by_approach.csv
+    source_target_heatmap: n1_viz_source_target_heatmap.csv
+    focus_pos: n1_viz_focus_pos.csv
+    conceptual_metaphors: n1_viz_conceptual_metaphors.csv
+    epistemic_correspondences: n1_viz_epistemic_correspondences.csv
+    sankey_by_approach: n1_viz_sankey_by_approach.csv
+    sankey_consolidated: n1_viz_sankey_consolidated.csv
+    concordance_matrix: n1_viz_concordance_matrix.csv
+    summary: n1_viz_summary.csv
+  status:
+    file: outputs/logs/stage_01_visualisation_status.json

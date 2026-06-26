@@ -24,7 +24,20 @@ except ImportError:  # pragma: no cover - exercised only in lean environments
     sns = None
 
 from ai_melt.paths import project_path
-from ai_melt.primary_metaphors import load_approach_results
+
+STAGE_00_VISUALISATION_STEPS = [
+    "load",
+    "corpus-overview",
+    "document-distribution",
+    "chapter-distribution",
+    "sentence-lengths",
+    "named-entities",
+    "pos-distribution",
+    "word-counts",
+    "footnotes",
+    "export-summary",
+]
+STAGE_00_VISUALISATION_EXECUTION_STEPS = STAGE_00_VISUALISATION_STEPS.copy()
 
 if sns is not None:
     sns.set_style("whitegrid")
@@ -124,6 +137,191 @@ def save_current_figure(path: Path) -> Path:
     plt.savefig(path, dpi=150, bbox_inches="tight")
     plt.close()
     return path
+
+
+def stage_00_viz_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the Stage 00 visualisation config section."""
+    return config["stage_00_visualisation"]
+
+
+def stage_00_viz_input_path(viz_config: dict[str, Any]) -> Path:
+    """Return the configured N0 corpus CSV path."""
+    inputs = viz_config.get("inputs", {})
+    return project_path(inputs.get("corpus_csv", viz_config.get("input")))
+
+
+def stage_00_footnotes_input_path(config: dict[str, Any]) -> Path:
+    """Return the configured footnotes table path, preferring exported output."""
+    viz_config = stage_00_viz_config(config)
+    inputs = viz_config.get("inputs", {})
+    if "footnotes_csv" in inputs:
+        return project_path(inputs["footnotes_csv"])
+    stage_outputs = config.get("stage_00", {}).get("outputs", {})
+    if "footnotes_csv" in stage_outputs:
+        return project_path(stage_outputs["footnotes_csv"])
+    stage_intermediate = config.get("stage_00", {}).get("intermediate_outputs", {})
+    return project_path(
+        stage_intermediate.get("footnotes_csv", "outputs/tables/n0_footnotes.csv")
+    )
+
+
+def stage_00_viz_output_dirs(viz_config: dict[str, Any]) -> dict[str, Path]:
+    """Return configured visualisation output directories."""
+    outputs = viz_config.get("outputs", {})
+    return {
+        "figures": project_path(outputs.get("figures_dir", "outputs/figures")),
+        "tables": project_path(outputs.get("tables_dir", "outputs/tables")),
+        "html": project_path(outputs.get("html_dir", "outputs/html")),
+    }
+
+
+def stage_00_table_path(viz_config: dict[str, Any], key: str) -> Path:
+    """Return a configured Stage 00 visualisation table path."""
+    dirs = stage_00_viz_output_dirs(viz_config)
+    return dirs["tables"] / viz_config["table_names"][key]
+
+
+def stage_00_figure_path(
+    viz_config: dict[str, Any], key: str, slug: str | None = None
+) -> Path:
+    """Return a configured Stage 00 visualisation figure path."""
+    dirs = stage_00_viz_output_dirs(viz_config)
+    name = viz_config["figure_names"][key]
+    if slug is not None:
+        name = name.format(slug=slug)
+    return dirs["figures"] / name
+
+
+def write_stage_00_table(df: pd.DataFrame, path: Path) -> Path:
+    """Write a Stage 00 visualisation summary table."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    return path
+
+
+def load_stage_00_visualisation_data(config: dict[str, Any]) -> pd.DataFrame:
+    """Load the configured N0 corpus CSV."""
+    path = stage_00_viz_input_path(stage_00_viz_config(config))
+    return pd.read_csv(path)
+
+
+def stage_00_volumes(df_n0: pd.DataFrame) -> list[str]:
+    """Return the notebook-compatible sorted volume list."""
+    if "volumen" not in df_n0:
+        return ["corpus"]
+    return sorted(df_n0["volumen"].dropna().unique())
+
+
+def corpus_overview_table(df_n0: pd.DataFrame) -> pd.DataFrame:
+    """Summarise corpus-level counts shown by the legacy notebook."""
+    words = int(df_n0["n_palabras"].sum()) if "n_palabras" in df_n0 else 0
+    sentences = len(df_n0)
+    return pd.DataFrame(
+        [
+            {
+                "total_documents": (
+                    int(df_n0["ID_documento"].nunique())
+                    if "ID_documento" in df_n0
+                    else int(df_n0["volumen"].nunique()) if "volumen" in df_n0 else 0
+                ),
+                "total_chapters": (
+                    int(df_n0["capitulo"].nunique()) if "capitulo" in df_n0 else 0
+                ),
+                "total_sentences": sentences,
+                "total_words": words,
+                "average_words_per_sentence": (words / sentences if sentences else 0),
+            }
+        ]
+    )
+
+
+def document_distribution_table(df_n0: pd.DataFrame) -> pd.DataFrame:
+    """Summarise sentence and word counts by document/volume."""
+    group_cols = [col for col in ["ID_documento", "volumen"] if col in df_n0]
+    if not group_cols:
+        group_cols = ["_document"]
+        df_n0 = df_n0.assign(_document="corpus")
+    return (
+        df_n0.groupby(group_cols, dropna=False)
+        .agg(
+            n_oraciones=("ID_oracion", "count"),
+            n_palabras=("n_palabras", "sum"),
+        )
+        .reset_index()
+        .sort_values("n_oraciones", ascending=False)
+    )
+
+
+def chapter_distribution_table(df_n0: pd.DataFrame) -> pd.DataFrame:
+    """Summarise sentence and word counts by volume and chapter."""
+    return (
+        df_n0.groupby(["volumen", "capitulo"], dropna=False)
+        .agg(
+            n_oraciones=("ID_oracion", "count"),
+            n_palabras=("n_palabras", "sum"),
+            primera_pagina=("pagina", "min"),
+        )
+        .reset_index()
+    )
+
+
+def sentence_length_summary_table(df_n0: pd.DataFrame) -> pd.DataFrame:
+    """Summarise sentence length distributions for corpus and each volume."""
+    rows = []
+    subsets = [("CORPUS COMPLETO", df_n0)]
+    if "volumen" in df_n0:
+        subsets.extend(
+            (str(volume), df_n0[df_n0["volumen"] == volume])
+            for volume in stage_00_volumes(df_n0)
+        )
+    for label, subset in subsets:
+        lengths = subset["n_palabras"]
+        rows.append(
+            {
+                "scope": label,
+                "sentences": len(subset),
+                "min_words": int(lengths.min()) if not lengths.empty else 0,
+                "mean_words": float(lengths.mean()) if not lengths.empty else 0,
+                "median_words": float(lengths.median()) if not lengths.empty else 0,
+                "max_words": int(lengths.max()) if not lengths.empty else 0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def word_count_summary_table(df_n0: pd.DataFrame) -> pd.DataFrame:
+    """Summarise word counts by corpus, document, and chapter."""
+    rows = [
+        {
+            "scope": "corpus",
+            "items": 1,
+            "total_words": int(df_n0["n_palabras"].sum()),
+            "average_words": float(df_n0["n_palabras"].sum()),
+        }
+    ]
+    if "ID_documento" in df_n0:
+        by_doc = df_n0.groupby("ID_documento")["n_palabras"].sum()
+        rows.append(
+            {
+                "scope": "document",
+                "items": int(len(by_doc)),
+                "total_words": int(by_doc.sum()),
+                "average_words": float(by_doc.mean()) if not by_doc.empty else 0,
+            }
+        )
+    if "capitulo" in df_n0:
+        by_chapter = df_n0.groupby(["volumen", "capitulo"])["n_palabras"].sum()
+        rows.append(
+            {
+                "scope": "chapter",
+                "items": int(len(by_chapter)),
+                "total_words": int(by_chapter.sum()),
+                "average_words": (
+                    float(by_chapter.mean()) if not by_chapter.empty else 0
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def plot_corpus_size_by_volume(
@@ -385,6 +583,8 @@ def plot_corpus_wordcloud(
     slug: str = "corpus",
     label: str = "CORPUS COMPLETO",
     max_words: int = 150,
+    width: int = 1200,
+    height: int = 500,
     config: dict[str, Any] | None = None,
 ) -> list[Path]:
     """Plot a wordcloud for content lemmas."""
@@ -399,8 +599,8 @@ def plot_corpus_wordcloud(
     if not lemmas:
         return []
     wordcloud = WordCloud(
-        width=1200,
-        height=500,
+        width=width,
+        height=height,
         background_color="white",
         max_words=max_words,
         colormap="viridis",
@@ -416,6 +616,630 @@ def plot_corpus_wordcloud(
             / names.get("wordcloud", "viz_wordcloud_{slug}.png").format(slug=slug)
         )
     ]
+
+
+def plot_document_distribution_step(
+    df_n0: pd.DataFrame, viz_config: dict[str, Any]
+) -> list[Path]:
+    """Generate notebook volume-level sentence and word count figures."""
+    colors = volume_color_map(df_n0)
+    volumes = stage_00_volumes(df_n0)
+    vol_stats = (
+        df_n0.groupby("volumen")
+        .agg(n_oraciones=("ID_oracion", "count"), n_palabras=("n_palabras", "sum"))
+        .reindex(volumes)
+    )
+    written = []
+
+    fig, ax = plt.subplots(figsize=tuple(viz_config["figure_sizes"]["volume_bars"]))
+    ax.barh(
+        [volume[:40] for volume in volumes],
+        vol_stats["n_oraciones"].values,
+        color=[colors[volume] for volume in volumes],
+    )
+    ax.set_xlabel("Oraciones")
+    ax.set_title("Oraciones por volumen")
+    ax.tick_params(axis="y", labelsize=8)
+    written.append(
+        save_current_figure(stage_00_figure_path(viz_config, "sentences_by_volume"))
+    )
+
+    fig, ax = plt.subplots(figsize=tuple(viz_config["figure_sizes"]["volume_bars"]))
+    ax.barh(
+        [volume[:40] for volume in volumes],
+        vol_stats["n_palabras"].values,
+        color=[colors[volume] for volume in volumes],
+    )
+    ax.set_xlabel("Palabras")
+    ax.set_title("Palabras por volumen")
+    ax.tick_params(axis="y", labelsize=8)
+    written.append(
+        save_current_figure(stage_00_figure_path(viz_config, "words_by_volume"))
+    )
+    return written
+
+
+def plot_chapter_distribution_step(
+    df_n0: pd.DataFrame, viz_config: dict[str, Any]
+) -> list[Path]:
+    """Generate notebook global and per-volume chapter distribution figures."""
+    colors = volume_color_map(df_n0)
+    cap_stats = chapter_distribution_table(df_n0)
+    top_chapters = int(viz_config.get("top_chapters", 30))
+    chapter_order = viz_config.get("chapter_order", "aparicion")
+    written = []
+
+    display_caps = cap_stats.sort_values("n_oraciones", ascending=True).tail(
+        top_chapters
+    )
+    fig, ax = plt.subplots(figsize=(14, max(8, len(display_caps) * 0.45)))
+    labels = [
+        f"{row['capitulo'][:40]}  [{row['volumen'][:20]}]"
+        for _, row in display_caps.iterrows()
+    ]
+    ax.barh(
+        labels,
+        display_caps["n_oraciones"].values,
+        color=[
+            colors.get(row["volumen"], "#888") for _, row in display_caps.iterrows()
+        ],
+    )
+    ax.set_xlabel("Oraciones")
+    ax.set_title(
+        f"Oraciones por capitulo - todos los volumenes (top {len(display_caps)})"
+    )
+    ax.tick_params(axis="y", labelsize=7)
+    written.append(
+        save_current_figure(
+            stage_00_figure_path(viz_config, "sentences_by_chapter_global")
+        )
+    )
+
+    display_words = cap_stats.sort_values("n_palabras", ascending=True).tail(
+        top_chapters
+    )
+    fig, ax = plt.subplots(figsize=(14, max(8, len(display_words) * 0.45)))
+    labels = [
+        f"{row['capitulo'][:40]}  [{row['volumen'][:20]}]"
+        for _, row in display_words.iterrows()
+    ]
+    ax.barh(
+        labels,
+        display_words["n_palabras"].values,
+        color=[
+            colors.get(row["volumen"], "#888") for _, row in display_words.iterrows()
+        ],
+    )
+    ax.set_xlabel("Palabras")
+    ax.set_title(
+        f"Palabras por capitulo - todos los volumenes (top {len(display_words)})"
+    )
+    ax.tick_params(axis="y", labelsize=7)
+    written.append(
+        save_current_figure(stage_00_figure_path(viz_config, "words_by_chapter_global"))
+    )
+
+    for volume in stage_00_volumes(df_n0):
+        volume_data = cap_stats[cap_stats["volumen"] == volume].copy()
+        if volume_data.empty:
+            continue
+        if chapter_order == "magnitud":
+            sentences_data = volume_data.sort_values("n_oraciones", ascending=True)
+            words_data = volume_data.sort_values("n_palabras", ascending=True)
+        else:
+            sentences_data = volume_data.sort_values("primera_pagina", ascending=False)
+            words_data = volume_data.sort_values("primera_pagina", ascending=False)
+        slug = slugify(str(volume))
+        color = colors.get(volume, "#888")
+        fig, ax = plt.subplots(figsize=(12, max(4, len(volume_data) * 0.5)))
+        ax.barh(
+            [chapter[:50] for chapter in sentences_data["capitulo"]],
+            sentences_data["n_oraciones"].values,
+            color=color,
+        )
+        ax.set_xlabel("Oraciones")
+        ax.set_title(
+            f"Oraciones por capitulo - {str(volume)[:50]} (orden: {chapter_order})"
+        )
+        ax.tick_params(axis="y", labelsize=7)
+        written.append(
+            save_current_figure(
+                stage_00_figure_path(viz_config, "sentences_by_chapter_volume", slug)
+            )
+        )
+
+        fig, ax = plt.subplots(figsize=(12, max(4, len(volume_data) * 0.5)))
+        ax.barh(
+            [chapter[:50] for chapter in words_data["capitulo"]],
+            words_data["n_palabras"].values,
+            color=color,
+        )
+        ax.set_xlabel("Palabras")
+        ax.set_title(
+            f"Palabras por capitulo - {str(volume)[:50]} (orden: {chapter_order})"
+        )
+        ax.tick_params(axis="y", labelsize=7)
+        written.append(
+            save_current_figure(
+                stage_00_figure_path(viz_config, "words_by_chapter_volume", slug)
+            )
+        )
+    return written
+
+
+def plot_sentence_lengths_step(
+    df_n0: pd.DataFrame, viz_config: dict[str, Any]
+) -> list[Path]:
+    """Generate notebook sentence-length histogram and boxplot figures."""
+    colors = volume_color_map(df_n0)
+    bins = viz_config.get("histogram_bins", {})
+    written = []
+
+    fig, ax = plt.subplots(figsize=tuple(viz_config["figure_sizes"]["sentence_hist"]))
+    ax.hist(
+        df_n0["n_palabras"],
+        bins=int(bins.get("corpus_sentence_lengths", 50)),
+        color="#3B8BD4",
+        edgecolor="white",
+        alpha=0.8,
+    )
+    median = df_n0["n_palabras"].median()
+    ax.axvline(median, color="red", linestyle="--", label=f"Mediana: {median:.0f}")
+    ax.set_title("Distribucion de longitud de oraciones - CORPUS COMPLETO")
+    ax.set_xlabel("Palabras por oracion")
+    ax.set_ylabel("Frecuencia")
+    ax.legend(fontsize=9)
+    written.append(
+        save_current_figure(stage_00_figure_path(viz_config, "sentence_length_corpus"))
+    )
+
+    volumes = stage_00_volumes(df_n0)
+    for volume in volumes:
+        data = df_n0[df_n0["volumen"] == volume]["n_palabras"]
+        fig, ax = plt.subplots(
+            figsize=tuple(viz_config["figure_sizes"]["sentence_hist"])
+        )
+        ax.hist(
+            data,
+            bins=int(bins.get("volume_sentence_lengths", 40)),
+            color=colors[volume],
+            edgecolor="white",
+            alpha=0.8,
+        )
+        median_volume = data.median()
+        ax.axvline(
+            median_volume,
+            color="red",
+            linestyle="--",
+            label=f"Mediana: {median_volume:.0f}",
+        )
+        ax.set_title(f"Distribucion de longitud de oraciones - {str(volume)[:50]}")
+        ax.set_xlabel("Palabras por oracion")
+        ax.set_ylabel("Frecuencia")
+        ax.legend(fontsize=9)
+        written.append(
+            save_current_figure(
+                stage_00_figure_path(
+                    viz_config, "sentence_length_volume", slugify(str(volume))
+                )
+            )
+        )
+
+    if len(volumes) > 1:
+        fig, ax = plt.subplots(
+            figsize=tuple(viz_config["figure_sizes"]["sentence_boxplot"])
+        )
+        data_by_volume = [
+            df_n0.loc[df_n0["volumen"] == volume, "n_palabras"].values
+            for volume in volumes
+        ]
+        boxplot = ax.boxplot(
+            data_by_volume,
+            labels=[volume[:25] for volume in volumes],
+            patch_artist=True,
+        )
+        for patch, color in zip(boxplot["boxes"], colors.values(), strict=False):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        ax.set_xlabel("Volumen")
+        ax.set_ylabel("Palabras por oracion")
+        ax.set_title("Distribucion de longitud de oraciones por volumen")
+        plt.xticks(rotation=45, ha="right", fontsize=8)
+        written.append(
+            save_current_figure(
+                stage_00_figure_path(viz_config, "sentence_length_by_volume")
+            )
+        )
+    return written
+
+
+def named_entities_summary_table(df_n0: pd.DataFrame) -> pd.DataFrame:
+    """Build NER frequency summaries for corpus and each volume."""
+    rows = []
+    subsets = [("corpus", "CORPUS COMPLETO", df_n0)]
+    subsets.extend(
+        (slugify(str(volume)), str(volume), df_n0[df_n0["volumen"] == volume])
+        for volume in stage_00_volumes(df_n0)
+    )
+    for slug, label, subset in subsets:
+        entities = extract_entities_for_subset(subset)
+        if not entities:
+            continue
+        counts = Counter(entity for entity, _ in entities)
+        labels = Counter(entity_label for _, entity_label in entities)
+        for entity, count in counts.most_common():
+            rows.append(
+                {
+                    "scope_slug": slug,
+                    "scope_label": label,
+                    "summary_type": "entity",
+                    "value": entity,
+                    "count": count,
+                }
+            )
+        for entity_label, count in labels.most_common():
+            rows.append(
+                {
+                    "scope_slug": slug,
+                    "scope_label": label,
+                    "summary_type": "entity_type",
+                    "value": entity_label,
+                    "count": count,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def plot_named_entities_step(
+    df_n0: pd.DataFrame, viz_config: dict[str, Any]
+) -> list[Path]:
+    """Generate notebook NER figures for corpus and each volume."""
+    output_dir = stage_00_viz_output_dirs(viz_config)["figures"]
+    written = []
+    colors = volume_color_map(df_n0)
+    written.extend(
+        plot_named_entities(
+            df_n0,
+            output_dir,
+            label="CORPUS COMPLETO",
+            color="#D85A30",
+            slug="corpus",
+            config=viz_config,
+        )
+    )
+    for volume in stage_00_volumes(df_n0):
+        written.extend(
+            plot_named_entities(
+                df_n0[df_n0["volumen"] == volume],
+                output_dir,
+                label=str(volume)[:50],
+                color=colors.get(volume, "#888"),
+                slug=slugify(str(volume)),
+                config=viz_config,
+            )
+        )
+    return written
+
+
+def pos_distribution_summary_table(df_n0: pd.DataFrame) -> pd.DataFrame:
+    """Build POS frequency summaries for corpus and each volume."""
+    rows = []
+    subsets = [("corpus", "CORPUS COMPLETO", df_n0)]
+    subsets.extend(
+        (slugify(str(volume)), str(volume), df_n0[df_n0["volumen"] == volume])
+        for volume in stage_00_volumes(df_n0)
+    )
+    for slug, label, subset in subsets:
+        pos_counts = Counter(extract_pos_for_subset(subset))
+        for pos, count in pos_counts.most_common():
+            rows.append(
+                {
+                    "scope_slug": slug,
+                    "scope_label": label,
+                    "pos": pos,
+                    "count": count,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def plot_pos_distribution_step(
+    df_n0: pd.DataFrame, viz_config: dict[str, Any]
+) -> list[Path]:
+    """Generate notebook POS figures for corpus and each volume."""
+    output_dir = stage_00_viz_output_dirs(viz_config)["figures"]
+    written = []
+    colors = volume_color_map(df_n0)
+    written.extend(
+        plot_pos_distribution(
+            df_n0,
+            output_dir,
+            label="CORPUS COMPLETO",
+            color="#3B8BD4",
+            slug="corpus",
+            config=viz_config,
+        )
+    )
+    for volume in stage_00_volumes(df_n0):
+        written.extend(
+            plot_pos_distribution(
+                df_n0[df_n0["volumen"] == volume],
+                output_dir,
+                label=str(volume)[:50],
+                color=colors.get(volume, "#888"),
+                slug=slugify(str(volume)),
+                config=viz_config,
+            )
+        )
+    return written
+
+
+def content_lemma_frequency_table(df_n0: pd.DataFrame) -> pd.DataFrame:
+    """Build content-lemma frequencies used by the notebook wordclouds."""
+    rows = []
+    subsets = [("corpus", "CORPUS COMPLETO", df_n0)]
+    subsets.extend(
+        (slugify(str(volume)), str(volume), df_n0[df_n0["volumen"] == volume])
+        for volume in stage_00_volumes(df_n0)
+    )
+    for slug, label, subset in subsets:
+        lemma_counts = Counter(extract_content_lemmas_for_subset(subset))
+        for lemma, count in lemma_counts.most_common():
+            rows.append(
+                {
+                    "scope_slug": slug,
+                    "scope_label": label,
+                    "lemma": lemma,
+                    "count": count,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def plot_word_counts_step(
+    df_n0: pd.DataFrame, viz_config: dict[str, Any]
+) -> list[Path]:
+    """Generate notebook wordcloud figures for corpus and each volume."""
+    output_dir = stage_00_viz_output_dirs(viz_config)["figures"]
+    wordcloud_cfg = viz_config.get("wordcloud", {})
+    written = []
+    written.extend(
+        plot_corpus_wordcloud(
+            df_n0,
+            output_dir,
+            slug="corpus",
+            label="CORPUS COMPLETO",
+            max_words=int(wordcloud_cfg.get("corpus_max_words", 150)),
+            width=int(wordcloud_cfg.get("corpus_width", 1200)),
+            height=int(wordcloud_cfg.get("corpus_height", 500)),
+            config=viz_config,
+        )
+    )
+    for volume in stage_00_volumes(df_n0):
+        subset = df_n0[df_n0["volumen"] == volume]
+        lemmas = extract_content_lemmas_for_subset(subset)
+        if len(lemmas) <= int(wordcloud_cfg.get("min_volume_lemmas", 10)):
+            continue
+        written.extend(
+            plot_corpus_wordcloud(
+                subset,
+                output_dir,
+                slug=slugify(str(volume)),
+                label=str(volume)[:50],
+                max_words=int(wordcloud_cfg.get("volume_max_words", 80)),
+                width=int(wordcloud_cfg.get("volume_width", 800)),
+                height=int(wordcloud_cfg.get("volume_height", 400)),
+                config=viz_config,
+            )
+        )
+    return written
+
+
+def footnotes_summary_table(footnotes: pd.DataFrame) -> pd.DataFrame:
+    """Summarise available Stage 00 footnotes by document and page."""
+    if footnotes.empty:
+        return pd.DataFrame(columns=["ID_documento", "archivo", "pagina", "footnotes"])
+    group_cols = [
+        column
+        for column in ["ID_documento", "archivo", "volumen", "pagina"]
+        if column in footnotes
+    ]
+    if not group_cols:
+        return pd.DataFrame([{"footnotes": len(footnotes)}])
+    return (
+        footnotes.groupby(group_cols, dropna=False)
+        .size()
+        .reset_index(name="footnotes")
+        .sort_values("footnotes", ascending=False)
+    )
+
+
+def export_summary_table(paths: list[Path]) -> pd.DataFrame:
+    """Build a final listing of generated Stage 00 visualisation outputs."""
+    rows = []
+    for path in sorted(paths):
+        rows.append(
+            {
+                "path": str(path),
+                "exists": path.exists(),
+                "size_kb": round(path.stat().st_size / 1024, 1) if path.exists() else 0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def run_stage_00_visualisation_step(
+    config: dict[str, Any], step: str
+) -> dict[str, Any]:
+    """Run one inspectable Stage 00 visualisation step."""
+    viz_config = stage_00_viz_config(config)
+    input_path = stage_00_viz_input_path(viz_config)
+    if step == "load":
+        df_n0 = load_stage_00_visualisation_data(config)
+        return {
+            "input": input_path,
+            "_summary": {
+                "rows": len(df_n0),
+                "columns": list(df_n0.columns),
+                "documents": (
+                    int(df_n0["ID_documento"].nunique())
+                    if "ID_documento" in df_n0
+                    else 0
+                ),
+                "chapters": (
+                    int(df_n0["capitulo"].nunique()) if "capitulo" in df_n0 else 0
+                ),
+                "total_words": (
+                    int(df_n0["n_palabras"].sum()) if "n_palabras" in df_n0 else 0
+                ),
+            },
+        }
+
+    df_n0 = load_stage_00_visualisation_data(config)
+    if step == "corpus-overview":
+        table = corpus_overview_table(df_n0)
+        path = write_stage_00_table(
+            table, stage_00_table_path(viz_config, "corpus_overview_csv")
+        )
+        return {"table": path, "_summary": table.iloc[0].to_dict()}
+    if step == "document-distribution":
+        table = document_distribution_table(df_n0)
+        table_path = write_stage_00_table(
+            table, stage_00_table_path(viz_config, "document_distribution_csv")
+        )
+        figures = plot_document_distribution_step(df_n0, viz_config)
+        return {
+            "table": table_path,
+            "figures": figures,
+            "_summary": {
+                "documents": len(table),
+                "total_sentences": int(table["n_oraciones"].sum()),
+                "total_words": int(table["n_palabras"].sum()),
+            },
+        }
+    if step == "chapter-distribution":
+        table = chapter_distribution_table(df_n0)
+        table_path = write_stage_00_table(
+            table, stage_00_table_path(viz_config, "chapter_distribution_csv")
+        )
+        figures = plot_chapter_distribution_step(df_n0, viz_config)
+        return {
+            "table": table_path,
+            "figures": figures,
+            "_summary": {
+                "chapters": len(table),
+                "top_sentence_chapter": (
+                    table.sort_values("n_oraciones", ascending=False)
+                    .head(1)
+                    .to_dict("records")
+                ),
+                "top_word_chapter": (
+                    table.sort_values("n_palabras", ascending=False)
+                    .head(1)
+                    .to_dict("records")
+                ),
+            },
+        }
+    if step == "sentence-lengths":
+        table = sentence_length_summary_table(df_n0)
+        table_path = write_stage_00_table(
+            table, stage_00_table_path(viz_config, "sentence_lengths_csv")
+        )
+        figures = plot_sentence_lengths_step(df_n0, viz_config)
+        corpus_row = table[table["scope"] == "CORPUS COMPLETO"].iloc[0].to_dict()
+        return {"table": table_path, "figures": figures, "_summary": corpus_row}
+    if step == "named-entities":
+        table = named_entities_summary_table(df_n0)
+        table_path = write_stage_00_table(
+            table, stage_00_table_path(viz_config, "named_entities_csv")
+        )
+        figures = plot_named_entities_step(df_n0, viz_config)
+        return {
+            "table": table_path,
+            "figures": figures,
+            "_summary": {"rows": len(table), "figures": len(figures)},
+        }
+    if step == "pos-distribution":
+        table = pos_distribution_summary_table(df_n0)
+        table_path = write_stage_00_table(
+            table, stage_00_table_path(viz_config, "pos_distribution_csv")
+        )
+        figures = plot_pos_distribution_step(df_n0, viz_config)
+        return {
+            "table": table_path,
+            "figures": figures,
+            "_summary": {"rows": len(table), "figures": len(figures)},
+        }
+    if step == "word-counts":
+        word_table = word_count_summary_table(df_n0)
+        word_path = write_stage_00_table(
+            word_table, stage_00_table_path(viz_config, "word_counts_csv")
+        )
+        lemma_table = content_lemma_frequency_table(df_n0)
+        lemma_path = write_stage_00_table(
+            lemma_table, stage_00_table_path(viz_config, "content_lemmas_csv")
+        )
+        figures = plot_word_counts_step(df_n0, viz_config)
+        return {
+            "word_table": word_path,
+            "lemma_table": lemma_path,
+            "figures": figures,
+            "_summary": {
+                "total_words": int(df_n0["n_palabras"].sum()),
+                "avg_words_by_document": (
+                    float(df_n0.groupby("ID_documento")["n_palabras"].sum().mean())
+                    if "ID_documento" in df_n0
+                    else 0
+                ),
+                "avg_words_by_chapter": (
+                    float(
+                        df_n0.groupby(["volumen", "capitulo"])["n_palabras"]
+                        .sum()
+                        .mean()
+                    )
+                    if {"volumen", "capitulo"}.issubset(df_n0.columns)
+                    else 0
+                ),
+                "figures": len(figures),
+            },
+        }
+    if step == "footnotes":
+        footnote_path = stage_00_footnotes_input_path(config)
+        footnotes = (
+            pd.read_csv(footnote_path) if footnote_path.exists() else pd.DataFrame()
+        )
+        table = footnotes_summary_table(footnotes)
+        table_path = write_stage_00_table(
+            table, stage_00_table_path(viz_config, "footnotes_summary_csv")
+        )
+        return {
+            "input": footnote_path,
+            "table": table_path,
+            "_summary": {
+                "footnotes": len(footnotes),
+                "groups": len(table),
+                "input_exists": footnote_path.exists(),
+            },
+        }
+    if step == "export-summary":
+        outputs = []
+        for directory in stage_00_viz_output_dirs(viz_config).values():
+            if directory.exists():
+                outputs.extend(
+                    path
+                    for path in directory.iterdir()
+                    if path.is_file()
+                    and path.name.startswith(("viz_", "n0_viz_", "n0_"))
+                )
+        table = export_summary_table(outputs)
+        table_path = write_stage_00_table(
+            table, stage_00_table_path(viz_config, "export_summary_csv")
+        )
+        return {
+            "table": table_path,
+            "_summary": {"outputs_listed": len(table)},
+        }
+    raise ValueError(f"Unknown Stage 00 visualisation step: {step}")
 
 
 def visualise_corpus(df_n0: pd.DataFrame, config: dict[str, Any]) -> list[Path]:
@@ -447,6 +1271,102 @@ def visualise_corpus(df_n0: pd.DataFrame, config: dict[str, Any]) -> list[Path]:
             plot_pos_distribution(subset, output_dir, volume[:50], color, slug, config)
         )
     return written
+
+
+def stage_00_visualisation_output_paths(result: dict[str, Any]) -> list[Path]:
+    """Extract output paths from a Stage 00 visualisation step result."""
+    outputs = []
+    for key, value in result.items():
+        if key.startswith("_") or key == "input":
+            continue
+        if isinstance(value, Path):
+            outputs.append(value)
+        elif isinstance(value, list | tuple):
+            outputs.extend(path for path in value if isinstance(path, Path))
+    return outputs
+
+
+def summarise_stage_00_visualisation_result(step: str, result: dict[str, Any]) -> str:
+    """Return useful console output for a Stage 00 visualisation step."""
+    summary = result.get("_summary", {})
+    outputs = stage_00_visualisation_output_paths(result)
+    lines = [f"Stage 00 visualisation step: {step}"]
+    if step == "load":
+        lines.extend(
+            [
+                f"Input file: {result['input']}",
+                f"Rows loaded: {summary.get('rows', 0):,}",
+                f"Columns loaded: {', '.join(summary.get('columns', []))}",
+                f"Documents: {summary.get('documents', 0):,}",
+                f"Chapters: {summary.get('chapters', 0):,}",
+                f"Total words: {summary.get('total_words', 0):,}",
+                "Output status: "
+                f"{'available' if result['input'].exists() else 'missing'}",
+            ]
+        )
+    elif step == "corpus-overview":
+        lines.extend(
+            [
+                f"Total documents: {int(summary.get('total_documents', 0)):,}",
+                f"Total sentences: {int(summary.get('total_sentences', 0)):,}",
+                f"Total words: {int(summary.get('total_words', 0)):,}",
+                "Average words per sentence: "
+                f"{summary.get('average_words_per_sentence', 0):.2f}",
+            ]
+        )
+    elif step == "document-distribution":
+        lines.extend(
+            [
+                f"Documents included: {summary.get('documents', 0):,}",
+                f"Sentences per document total: {summary.get('total_sentences', 0):,}",
+                f"Words per document total: {summary.get('total_words', 0):,}",
+            ]
+        )
+    elif step == "chapter-distribution":
+        lines.append(f"Number of chapters: {summary.get('chapters', 0):,}")
+        if summary.get("top_sentence_chapter"):
+            lines.append(
+                "Top chapter by sentence count: "
+                f"{summary['top_sentence_chapter'][0]}"
+            )
+        if summary.get("top_word_chapter"):
+            lines.append(f"Top chapter by word count: {summary['top_word_chapter'][0]}")
+    elif step == "sentence-lengths":
+        lines.extend(
+            [
+                f"Minimum sentence length: {summary.get('min_words', 0):,}",
+                f"Mean sentence length: {summary.get('mean_words', 0):.2f}",
+                f"Maximum sentence length: {summary.get('max_words', 0):,}",
+            ]
+        )
+    elif step == "word-counts":
+        lines.extend(
+            [
+                f"Total words: {summary.get('total_words', 0):,}",
+                "Average words by document: "
+                f"{summary.get('avg_words_by_document', 0):.2f}",
+                "Average words by chapter: "
+                f"{summary.get('avg_words_by_chapter', 0):.2f}",
+            ]
+        )
+    elif step == "footnotes":
+        lines.extend(
+            [
+                f"Footnote file used: {result['input']}",
+                f"Number of footnotes: {summary.get('footnotes', 0):,}",
+                f"Footnote document/page groups: {summary.get('groups', 0):,}",
+            ]
+        )
+    else:
+        for key, value in summary.items():
+            lines.append(f"{key}: {value}")
+
+    if outputs:
+        lines.append("Outputs written:")
+        lines.extend(f"  - {path}" for path in outputs)
+    else:
+        lines.append("Outputs written: none")
+    return "\n".join(lines)
 
 
 def concat_metaphor_results(
@@ -854,25 +1774,360 @@ def visualise_primary_metaphors(
 
 def run_stage_00_visualisation(config: dict[str, Any]) -> list[Path]:
     """Load configured N0 data and generate corpus visualisations."""
-    viz_config = config["stage_00_visualisation"]
-    df_n0 = pd.read_csv(project_path(viz_config["input"]))
-    return visualise_corpus(df_n0, viz_config)
+    written = []
+    for step in STAGE_00_VISUALISATION_EXECUTION_STEPS:
+        result = run_stage_00_visualisation_step(config, step)
+        written.extend(stage_00_visualisation_output_paths(result))
+    return written
 
 
 def run_stage_01_visualisation(config: dict[str, Any]) -> list[Path]:
-    """Load configured N1 data and generate primary metaphor visualisations."""
-    viz_config = config["stage_01_visualisation"]
-    stage_config = config["stage_01"]
-    df_n0 = pd.read_csv(project_path(viz_config["inputs"]["corpus_csv"]))
-    results = load_approach_results(
-        viz_config.get("approaches", []), viz_config["inputs"]["metaphors_pattern"]
+    """Run every Stage 01 visualisation step."""
+    written = []
+    for step in STAGE_01_VISUALISATION_STEPS:
+        result = run_stage_01_visualisation_step(config, step)
+        written.extend(stage_00_visualisation_output_paths(result))
+    return written
+
+
+STAGE_01_VISUALISATION_STEPS = [
+    "load",
+    "metaphors-by-chapter-and-approach",
+    "top-domains-aggregated",
+    "top-source-domains-by-approach",
+    "top-target-domains-by-approach",
+    "source-target-heatmap",
+    "focus-pos-by-approach",
+    "conceptual-metaphor-wordcloud",
+    "epistemic-correspondences",
+    "sankey-by-approach",
+    "sankey-consolidated",
+    "approach-concordance-matrix",
+    "summary",
+]
+
+
+def _read_n1(path: Path) -> pd.DataFrame:
+    return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+
+
+def _load_stage_01_viz(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], pd.DataFrame, dict[str, pd.DataFrame]]:
+    viz = config["stage_01_visualisation"]
+    n0 = _read_n1(project_path(viz["inputs"]["n0_corpus"]))
+    results = {}
+    for approach in viz["approaches"]:
+        path = project_path(
+            viz["inputs"]["metaphors_pattern"].format(approach=approach)
+        )
+        if path.exists():
+            results[approach] = _read_n1(path)
+    return viz, n0, results
+
+
+def _n1_dirs(viz: dict[str, Any]) -> dict[str, Path]:
+    return {
+        key.replace("_dir", ""): project_path(value)
+        for key, value in viz["outputs"].items()
+    }
+
+
+def _n1_table(viz: dict[str, Any], key: str, df: pd.DataFrame) -> Path:
+    path = _n1_dirs(viz)["tables"] / viz["table_names"][key]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+    return path
+
+
+def _n1_domain_table(
+    results: dict[str, pd.DataFrame], column: str, top_n: int
+) -> pd.DataFrame:
+    rows = []
+    for approach, df in results.items():
+        counts = df[column].dropna()
+        counts = counts[counts != ""].value_counts().head(top_n)
+        rows.extend(
+            {
+                "approach": approach,
+                "domain_type": column,
+                "domain": domain,
+                "count": count,
+            }
+            for domain, count in counts.items()
+        )
+    return pd.DataFrame(rows)
+
+
+def _plot_domains_by_approach(
+    table: pd.DataFrame,
+    column_label: str,
+    colors: dict[str, str],
+    output: Path,
+    top_n: int,
+) -> Path:
+    approaches = table["approach"].unique().tolist()
+    fig, axes = plt.subplots(1, len(approaches), figsize=(6 * len(approaches), 6))
+    axes = np.atleast_1d(axes)
+    for axis, approach in zip(axes, approaches, strict=False):
+        subset = table[table["approach"] == approach]
+        axis.barh(
+            subset["domain"][::-1],
+            subset["count"][::-1],
+            color=colors[approach],
+        )
+        axis.set_title(f"Top {top_n} dominios {column_label} - {approach}")
+        axis.set_xlabel("Frecuencia")
+    return save_current_figure(output)
+
+
+def run_stage_01_visualisation_step(
+    config: dict[str, Any], step: str
+) -> dict[str, Any]:
+    """Run one Stage 01 visualisation step."""
+    viz, n0, results = _load_stage_01_viz(config)
+    if not results:
+        raise FileNotFoundError("No Claude or OpenAI Stage 01 results found.")
+    dirs = _n1_dirs(viz)
+    colors = viz["colors"]
+    all_results = pd.concat(results.values(), ignore_index=True)
+
+    if step == "load":
+        rows = [
+            {
+                "approach": approach,
+                "rows": len(df),
+                "documents": df["ID_documento"].nunique(),
+            }
+            for approach, df in results.items()
+        ]
+        table = _n1_table(viz, "load_summary", pd.DataFrame(rows))
+        return {
+            "table": table,
+            "_summary": {
+                "n0_rows": len(n0),
+                "approaches": list(results),
+                "rows": {key: len(value) for key, value in results.items()},
+            },
+        }
+
+    top_n = int(viz["top_domains"])
+
+    if step == "metaphors-by-chapter-and-approach":
+        rows = []
+        for approach, df in results.items():
+            joined = df.merge(
+                n0[["ID_oracion", "capitulo"]].drop_duplicates(),
+                on="ID_oracion",
+                how="left",
+            )
+            counts = joined["capitulo"].value_counts()
+            rows.extend(
+                {"approach": approach, "chapter": chapter, "count": count}
+                for chapter, count in counts.items()
+            )
+        table = _n1_table(viz, "metaphors_by_chapter", pd.DataFrame(rows))
+        figures = plot_metaphors_by_chapter(results, n0, dirs["figures"], colors, viz)
+        return {"table": table, "figures": figures, "_summary": {"rows": len(rows)}}
+
+    if step == "top-domains-aggregated":
+        source = all_results["dominio_fuente"].value_counts().head(top_n)
+        target = all_results["dominio_meta"].value_counts().head(top_n)
+        table_df = pd.concat(
+            [
+                source.rename_axis("domain")
+                .reset_index(name="count")
+                .assign(domain_type="source"),
+                target.rename_axis("domain")
+                .reset_index(name="count")
+                .assign(domain_type="target"),
+            ]
+        )
+        table = _n1_table(viz, "top_domains_aggregated", table_df)
+        figures = plot_top_domains(results, dirs["figures"], viz)
+        return {"table": table, "figures": figures, "_summary": {"top_n": top_n}}
+
+    if step in {
+        "top-source-domains-by-approach",
+        "top-target-domains-by-approach",
+    }:
+        source = step.startswith("top-source")
+        column = "dominio_fuente" if source else "dominio_meta"
+        key = "source_domains_by_approach" if source else "target_domains_by_approach"
+        table_df = _n1_domain_table(results, column, top_n)
+        table = _n1_table(viz, key, table_df)
+        figure = _plot_domains_by_approach(
+            table_df,
+            "fuente" if source else "meta",
+            colors,
+            dirs["figures"] / viz["figure_names"][key],
+            top_n,
+        )
+        return {"table": table, "figure": figure, "_summary": {"top_n": top_n}}
+
+    if step == "source-target-heatmap":
+        clean = all_results[
+            all_results["dominio_fuente"].notna()
+            & (all_results["dominio_fuente"] != "")
+        ]
+        top_source = (
+            clean["dominio_fuente"].value_counts().head(int(viz["heatmap_top_n"])).index
+        )
+        top_target = (
+            clean["dominio_meta"].value_counts().head(int(viz["heatmap_top_n"])).index
+        )
+        cross = pd.crosstab(
+            clean[clean["dominio_fuente"].isin(top_source)]["dominio_fuente"],
+            clean[clean["dominio_meta"].isin(top_target)]["dominio_meta"],
+        )
+        table = _n1_table(viz, "source_target_heatmap", cross.reset_index())
+        figures = plot_domain_heatmap(results, dirs["figures"], viz)
+        return {"table": table, "figures": figures, "_summary": {"cells": cross.size}}
+
+    if step == "focus-pos-by-approach":
+        table_df = (
+            all_results.groupby(["enfoque", "foco_part_of_speech"])
+            .size()
+            .reset_index(name="count")
+        )
+        table = _n1_table(viz, "focus_pos", table_df)
+        figures = plot_focus_pos(results, dirs["figures"], colors, viz)
+        return {"table": table, "figures": figures, "_summary": {"rows": len(table_df)}}
+
+    if step == "conceptual-metaphor-wordcloud":
+        counts = all_results["metafora_conceptual"].dropna()
+        counts = counts[counts != ""].value_counts()
+        table = _n1_table(
+            viz,
+            "conceptual_metaphors",
+            counts.rename_axis("metaphor").reset_index(name="count"),
+        )
+        from wordcloud import WordCloud
+
+        wordcloud = WordCloud(
+            width=int(viz["wordcloud"]["width"]),
+            height=int(viz["wordcloud"]["height"]),
+            max_words=int(viz["wordcloud"]["max_words"]),
+            background_color="white",
+            colormap=viz["wordcloud"]["colormap"],
+            collocations=False,
+        ).generate(" ".join(all_results["metafora_conceptual"].dropna()))
+        fig, ax = plt.subplots(figsize=(14, 6))
+        ax.imshow(wordcloud, interpolation="bilinear")
+        ax.axis("off")
+        figure = save_current_figure(
+            dirs["figures"] / viz["figure_names"]["conceptual_metaphor_wordcloud"]
+        )
+        return {"table": table, "figure": figure, "_summary": {"unique": len(counts)}}
+
+    if step == "epistemic-correspondences":
+        path = project_path(viz["inputs"]["epistemic_correspondences"])
+        epistemic = _read_n1(path) if path.exists() else pd.DataFrame()
+        filtered = (
+            epistemic[epistemic["enfoque"].isin(viz["approaches"])]
+            if not epistemic.empty
+            else epistemic
+        )
+        counts = (
+            filtered.groupby(["tipo_inferencia", "enfoque"])
+            .size()
+            .reset_index(name="count")
+            if not filtered.empty
+            else pd.DataFrame(columns=["tipo_inferencia", "enfoque", "count"])
+        )
+        table = _n1_table(viz, "epistemic_correspondences", counts)
+        figures = []
+        if not filtered.empty:
+            figures = visualise_primary_metaphors(n0, {}, viz, colors, filtered)
+        return {"table": table, "figures": figures, "_summary": {"rows": len(filtered)}}
+
+    if step == "sankey-by-approach":
+        rows = []
+        html = []
+        for approach, df in results.items():
+            figure = build_sankey_per_approach(
+                df, approach, colors[approach], int(viz["sankey_top_n"])
+            )
+            if figure is not None:
+                path = dirs["html"] / viz["figure_names"]["sankey_by_approach"].format(
+                    approach=approach
+                )
+                path.parent.mkdir(parents=True, exist_ok=True)
+                pio.write_html(figure, path, include_plotlyjs="cdn")
+                html.append(path)
+                rows.append({"approach": approach, "html": str(path)})
+        table = _n1_table(viz, "sankey_by_approach", pd.DataFrame(rows))
+        return {"table": table, "html": html, "_summary": {"approaches": len(html)}}
+
+    if step == "sankey-consolidated":
+        figure = build_sankey_consolidated(
+            results,
+            list(results),
+            colors,
+            int(viz["consolidated_sankey_top_n"]),
+        )
+        html = dirs["html"] / viz["figure_names"]["sankey_consolidated"]
+        html.parent.mkdir(parents=True, exist_ok=True)
+        if figure is None:
+            raise RuntimeError("No domain data available for consolidated Sankey.")
+        pio.write_html(figure, html, include_plotlyjs="cdn")
+        table_df = (
+            all_results.groupby(["dominio_meta", "dominio_fuente"])
+            .size()
+            .reset_index(name="count")
+            .sort_values("count", ascending=False)
+            .head(int(viz["consolidated_sankey_top_n"]))
+        )
+        table = _n1_table(viz, "sankey_consolidated", table_df)
+        return {"table": table, "html": html, "_summary": {"pairs": len(table_df)}}
+
+    if step == "approach-concordance-matrix":
+        path = project_path(viz["inputs"]["kappa_matrix_csv"])
+        matrix = pd.read_csv(path, index_col=0)
+        table = _n1_table(viz, "concordance_matrix", matrix.reset_index())
+        fig, ax = plt.subplots(figsize=(8, 6))
+        if sns is not None:
+            sns.heatmap(
+                matrix.astype(float),
+                annot=True,
+                fmt=".3f",
+                cmap="RdYlGn",
+                center=0.5,
+                vmin=-0.2,
+                vmax=1.0,
+                ax=ax,
+            )
+        else:
+            ax.imshow(matrix.astype(float))
+        figure = save_current_figure(
+            dirs["figures"] / viz["figure_names"]["agreement_heatmap"]
+        )
+        return {
+            "table": table,
+            "figure": figure,
+            "_summary": {"approaches": len(matrix)},
+        }
+
+    if step == "summary":
+        paths = []
+        for directory in dirs.values():
+            if directory.exists():
+                paths.extend(path for path in directory.iterdir() if path.is_file())
+        table_df = export_summary_table(paths)
+        table = _n1_table(viz, "summary", table_df)
+        return {"table": table, "_summary": {"outputs": len(table_df)}}
+    raise ValueError(f"Unknown Stage 01 visualisation step: {step}")
+
+
+def summarise_stage_01_visualisation_result(step: str, result: dict[str, Any]) -> str:
+    """Format compact Stage 01 visualisation diagnostics."""
+    lines = [f"Stage 01 visualisation step: {step}"]
+    lines.extend(
+        f"{key.replace('_', ' ').title()}: {value}"
+        for key, value in result.get("_summary", {}).items()
     )
-    epistemic_path = project_path(viz_config["inputs"]["epistemic_correspondences_csv"])
-    epistemic = pd.read_csv(epistemic_path) if epistemic_path.exists() else None
-    return visualise_primary_metaphors(
-        df_n0,
-        results,
-        viz_config,
-        stage_config.get("approaches", {}).get("colors", {}),
-        epistemic,
-    )
+    outputs = stage_00_visualisation_output_paths(result)
+    if outputs:
+        lines.append("Outputs written:")
+        lines.extend(f"  - {path}" for path in outputs)
+    return "\n".join(lines)
